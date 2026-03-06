@@ -1,0 +1,79 @@
+# Contrastive Lane Representation Learning
+# Train on K cameras, deploy on camera K+1 with zero annotation.
+# Learns semantic lane types (rightmost, merge, turn) from behavior.
+
+data:
+  # Image dimensions
+  image_width: 1920
+  image_height: 1080
+
+  # Annotation directory (contains per-camera annotation.json + trajectory.csv)
+  annotation_dir: "../dataset/preprocess"
+  camera_locations: "./dataset/camera_location_list.txt"
+
+  # SUMO (disabled)
+  use_sumo_targets: false
+
+assignment:
+  lateral_threshold_px: 60.0
+  lane_change_std_px: 30.0
+  min_tracklet_points: 5
+
+model:
+  # Polyline encoder (shared architecture for geometry + trajectory)
+  polyline_k: 16                    # resample all polylines to 16 points
+  polyline_encoder: "transformer"
+  polyline_encoder_dim: 64
+  polyline_encoder_layers: 2
+  polyline_encoder_heads: 4
+  dropout: 0.1
+
+  # Lane encoder
+  stats_dim: 9                      # 4 traj_stats + 5 role descriptor
+  embed_dim: 128                    # lane embedding dimension
+  proj_dim: 64                      # projection head output (for contrastive loss)
+  geometry_dropout: 0.5             # drop geometry 50% to force trajectory-only learning
+
+  # Cross-lane attention (lanes within a group attend to each other)
+  use_cross_lane_attention: true
+  cross_lane_heads: 4
+  rel_feat_dim: 3
+
+contrastive_training:
+  epochs: 200                        # match_sim was still improving at 100
+  batch_size: 32                    # all lanes fit in one batch (~130 lanes)
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  optimizer: "adamw"
+  warmup_epochs: 5
+  grad_clip_norm: 1.0
+  early_stopping_patience: 50       # longer patience for 200 epochs
+
+  # InfoNCE parameters
+  temperature: 0.07
+
+  # Role regression (prevents representation collapse)
+  role_weight: 2.0                  # high weight forces rank/edge learning before contrastive
+
+  # Data augmentation
+  augment: true                     # rotation, jitter, subsampling
+
+  # Positive pair mining
+  role_similarity_threshold: 0.8    # cosine sim between role descriptors
+  max_traj_per_lane: 50             # max trajectories to sample per lane
+
+  # Evaluation
+  val_frequency: 5
+  checkpoint_frequency: 10
+
+  # Default held-out camera for leave-one-out eval
+  held_out_camera: ["I43_Keefe", "I43_Walnut"]
+
+system:
+  device: "auto"
+  num_workers: 0
+  seed: 42
+
+experiment:
+  experiment_name: "lane_contrastive"
+  saving_path: "./results/"
