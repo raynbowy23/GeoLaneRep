@@ -1,7 +1,7 @@
 # Contrastive Lane Encoder — Training & Evaluation
 # =================================================
 
-.PHONY: help train eval-zero-shot viz-contrastive viz-contrastive-all encoder-figures assign assign-cam assign-viz annotate train-temporal temporal-figures train-joint t5-ablation t5-figures clean
+.PHONY: help train eval-zero-shot viz-contrastive viz-contrastive-all encoder-figures assign assign-cam assign-viz annotate train-temporal temporal-figures train-joint t5-ablation t5-figures temporal-figures-joint viz-contrastive-joint extract extract-cam clean
 
 PYTHON     ?= python
 CONFIG     ?= configs/lane_contrastive.yaml
@@ -9,6 +9,11 @@ ANNOT_DIR  ?= ../graph_geolane_annotator
 CHECKPOINT ?=
 CAMERA     ?=
 HELD_OUT   ?=
+VIDEO_DIR  ?= ./dataset/511video
+CAMERA_LIST ?= ./dataset/camera_location_list.txt
+PREPROCESS_DIR ?= ../dataset/preprocess
+PARALLEL   ?= 4
+DETECTION_PERIOD ?= 3600
 
 help:
 	@echo ""
@@ -37,7 +42,13 @@ help:
 	@echo "  make train-joint                   Train joint contrastive+temporal encoder"
 	@echo "  make t5-ablation                   Run T5 ablation: two-stage vs joint vs joint+warm-start"
 	@echo "  make t5-figures                    Generate T5 comparison figures from training results"
-	@echo "  make temporal-figures              Generate figures 2a/2b/2c"
+	@echo "  make temporal-figures              Generate figures 2a/2b/2c (two-stage)"
+	@echo "  make temporal-figures-joint        Generate figures 2a/2b/2c (joint checkpoint)"
+	@echo "  make viz-contrastive-joint         Visualize contrastive embeddings (joint checkpoint)"
+	@echo ""
+	@echo "Preprocessing:"
+	@echo "  make extract                       Extract trajectories from all camera videos"
+	@echo "  make extract-cam CAMERA=X          Extract trajectories from single camera"
 	@echo ""
 	@echo "Other:"
 	@echo "  make annotate                      Open the lanelet annotator tool"
@@ -120,6 +131,35 @@ temporal-figures:
 	$(PYTHON) scripts/generate_temporal_figures.py --config $(CONFIG) \
 		--checkpoint $(if $(CHECKPOINT),$(CHECKPOINT),results/temporal_encoder/checkpoints/best.pt) \
 		--encoder-checkpoint results/lane_contrastive/checkpoints/best.pt
+
+temporal-figures-joint:
+	$(PYTHON) scripts/generate_temporal_figures.py --config $(CONFIG) \
+		--checkpoint $(if $(CHECKPOINT),$(CHECKPOINT),results/joint_encoder/checkpoints/best.pt) \
+		--joint --output-dir results/joint_encoder/figures
+
+viz-contrastive-joint:
+	$(PYTHON) scripts/visualize_contrastive.py \
+		$(if $(CHECKPOINT),--checkpoint $(CHECKPOINT),--checkpoint results/joint_encoder/checkpoints/best.pt) \
+		$(if $(CONFIG),--config $(CONFIG),) \
+		$(if $(HELD_OUT),--held-out $(HELD_OUT),) \
+		--output-dir results/joint_encoder/visualizations
+
+# ── Preprocessing (video → trajectories) ────────────────
+
+extract:
+	$(PYTHON) scripts/extract_video.py \
+		--list $(CAMERA_LIST) \
+		--video-dir $(VIDEO_DIR) \
+		--output $(PREPROCESS_DIR) \
+		--detection-period $(DETECTION_PERIOD) \
+		--parallel $(PARALLEL)
+
+extract-cam:
+	$(PYTHON) scripts/extract_video.py \
+		--video $(VIDEO_DIR)/$(CAMERA).mp4 \
+		--camera $(CAMERA) \
+		--output $(PREPROCESS_DIR) \
+		--detection-period $(DETECTION_PERIOD)
 
 # ── Cleanup ──────────────────────────────────────────────
 

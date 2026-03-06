@@ -6,12 +6,17 @@ Figures:
     2b — Anomaly score timeline with injected incident overlay
     2c — Embedding delta heatmap ||e(t) - e(t-1)|| per lane per window
 
-Usage:
+Usage (two-stage):
     python scripts/generate_temporal_figures.py \
         --config configs/lane_contrastive.yaml \
         --checkpoint results/temporal_encoder/checkpoints/best.pt \
-        --encoder-checkpoint results/lane_contrastive/checkpoints/best.pt \
-        --output-dir results/temporal_encoder/figures
+        --encoder-checkpoint results/lane_contrastive/checkpoints/best.pt
+
+Usage (joint):
+    python scripts/generate_temporal_figures.py \
+        --config configs/lane_contrastive.yaml \
+        --checkpoint results/joint_encoder/checkpoints/best.pt \
+        --joint
 """
 
 import sys
@@ -37,7 +42,12 @@ logger = logging.getLogger(__name__)
 
 
 def _load_model_and_data(args):
-    """Load temporal model, encoder, and dataset."""
+    """Load temporal or joint model and dataset.
+
+    Supports two modes:
+        --joint: loads JointLaneEncoder from a single checkpoint
+        (default): loads LaneTemporalEncoder from temporal + encoder checkpoints
+    """
     import yaml
 
     from src.data.temporal_dataset import TemporalLaneDataset, temporal_collate_fn
@@ -50,41 +60,78 @@ def _load_model_and_data(args):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Load encoder
-    enc_ckpt = torch.load(args.encoder_checkpoint, map_location=device)
-    enc_config = enc_ckpt.get("config", config)
-    mc = enc_config.get("model", {})
+    if getattr(args, "joint", False):
+        # --- Joint mode: single checkpoint contains everything ---
+        from src.models.joint_encoder import JointLaneEncoder
 
-    lane_encoder = LaneEncoder(
-        polyline_k=mc.get("polyline_k", 16),
-        d_model=mc.get("polyline_encoder_dim", 64),
-        embed_dim=mc.get("embed_dim", 128),
-        proj_dim=mc.get("proj_dim", 64),
-        polyline_mode=mc.get("polyline_encoder", "transformer"),
-        polyline_layers=mc.get("polyline_encoder_layers", 2),
-        polyline_heads=mc.get("polyline_encoder_heads", 4),
-        stats_dim=mc.get("stats_dim", 9),
-        geometry_dropout=0.0,
-        dropout=mc.get("dropout", 0.1),
-        use_cross_lane_attention=False,
-    )
-    lane_encoder.load_state_dict(enc_ckpt["model_state_dict"], strict=False)
+        ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+        ckpt_config = ckpt.get("config", config)
+        mc = ckpt_config.get("model", {})
+        tc = ckpt_config.get("temporal", {})
 
-    tc = config.get("temporal", {})
-    embed_dim = mc.get("embed_dim", 128)
+        lane_encoder = LaneEncoder(
+            polyline_k=mc.get("polyline_k", 16),
+            d_model=mc.get("polyline_encoder_dim", 64),
+            embed_dim=mc.get("embed_dim", 128),
+            proj_dim=mc.get("proj_dim", 64),
+            polyline_mode=mc.get("polyline_encoder", "transformer"),
+            polyline_layers=mc.get("polyline_encoder_layers", 2),
+            polyline_heads=mc.get("polyline_encoder_heads", 4),
+            stats_dim=mc.get("stats_dim", 9),
+            geometry_dropout=0.0,
+            dropout=mc.get("dropout", 0.1),
+            use_cross_lane_attention=False,
+        )
 
-    model = LaneTemporalEncoder(
-        lane_encoder=lane_encoder,
-        embed_dim=embed_dim,
-        freeze_encoder=True,
-        gru_layers=tc.get("gru_layers", 1),
-        dropout=tc.get("dropout", 0.1),
-    ).to(device)
+        model = JointLaneEncoder(
+            lane_encoder=lane_encoder,
+            embed_dim=mc.get("embed_dim", 128),
+            gru_layers=tc.get("gru_layers", 1),
+            dropout=tc.get("dropout", 0.1),
+        ).to(device)
 
-    # Load temporal checkpoint
-    temporal_ckpt = torch.load(args.checkpoint, map_location=device)
-    model.load_state_dict(temporal_ckpt["model_state_dict"])
-    model.eval()
+        model.load_state_dict(ckpt["model_state_dict"])
+        model.eval()
+        logger.info("Loaded JointLaneEncoder from checkpoint")
+
+    else:
+        # --- Two-stage mode: separate encoder + temporal checkpoints ---
+        enc_ckpt = torch.load(args.encoder_checkpoint, map_location=device)
+        enc_config = enc_ckpt.get("config", config)
+        mc = enc_config.get("model", {})
+
+        lane_encoder = LaneEncoder(
+            polyline_k=mc.get("polyline_k", 16),
+            d_model=mc.get("polyline_encoder_dim", 64),
+            embed_dim=mc.get("embed_dim", 128),
+            proj_dim=mc.get("proj_dim", 64),
+            polyline_mode=mc.get("polyline_encoder", "transformer"),
+            polyline_layers=mc.get("polyline_encoder_layers", 2),
+            polyline_heads=mc.get("polyline_encoder_heads", 4),
+            stats_dim=mc.get("stats_dim", 9),
+            geometry_dropout=0.0,
+            dropout=mc.get("dropout", 0.1),
+            use_cross_lane_attention=False,
+        )
+        lane_encoder.load_state_dict(enc_ckpt["model_state_dict"], strict=False)
+
+        tc = config.get("temporal", {})
+        embed_dim = mc.get("embed_dim", 128)
+
+        model = LaneTemporalEncoder(
+            lane_encoder=lane_encoder,
+            embed_dim=embed_dim,
+            freeze_encoder=True,
+            gru_layers=tc.get("gru_layers", 1),
+            dropout=tc.get("dropout", 0.1),
+        ).to(device)
+
+        temporal_ckpt = torch.load(args.checkpoint, map_location=device)
+        model.load_state_dict(temporal_ckpt["model_state_dict"])
+        model.eval()
+        logger.info("Loaded LaneTemporalEncoder (two-stage) from checkpoint")
+
+    mc = config.get("model", {})
 
     # Dataset
     dataset = TemporalLaneDataset(
@@ -348,11 +395,15 @@ def main():
     parser.add_argument("--config", required=True, help="Path to config YAML")
     parser.add_argument(
         "--checkpoint", required=True,
-        help="Path to temporal encoder checkpoint",
+        help="Path to temporal/joint encoder checkpoint",
     )
     parser.add_argument(
-        "--encoder-checkpoint", required=True,
-        help="Path to pre-trained LaneEncoder checkpoint",
+        "--encoder-checkpoint", default=None,
+        help="Path to pre-trained LaneEncoder checkpoint (required for two-stage, ignored for --joint)",
+    )
+    parser.add_argument(
+        "--joint", action="store_true",
+        help="Load as JointLaneEncoder (single checkpoint) instead of two-stage",
     )
     parser.add_argument(
         "--output-dir", default="results/temporal_encoder/figures",
@@ -364,6 +415,9 @@ def main():
         help="Which figures to generate (default: all)",
     )
     args = parser.parse_args()
+
+    if not args.joint and not args.encoder_checkpoint:
+        parser.error("--encoder-checkpoint is required for two-stage mode (use --joint for joint checkpoint)")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

@@ -26,12 +26,19 @@ logger = logging.getLogger(__name__)
 def load_trained_encoder(checkpoint_path: str, device: torch.device) -> Tuple[LaneEncoder, dict]:
     """Load a trained LaneEncoder from checkpoint.
 
+    Supports both standalone contrastive checkpoints and joint training
+    checkpoints (extracts lane_encoder_state_dict automatically).
+
     Returns:
         (model, config)
     """
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     config = ckpt["config"]
     model_cfg = config.get("model", {})
+
+    # Joint encoder trains without cross-lane attention
+    is_joint = "lane_encoder_state_dict" in ckpt
+    use_cross_lane = False if is_joint else model_cfg.get("use_cross_lane_attention", False)
 
     model = LaneEncoder(
         polyline_k=model_cfg.get("polyline_k", 16),
@@ -44,12 +51,17 @@ def load_trained_encoder(checkpoint_path: str, device: torch.device) -> Tuple[La
         stats_dim=model_cfg.get("stats_dim", 9),
         geometry_dropout=0.0,  # no dropout at eval
         dropout=0.0,
-        use_cross_lane_attention=model_cfg.get("use_cross_lane_attention", False),
+        use_cross_lane_attention=use_cross_lane,
         cross_lane_heads=model_cfg.get("cross_lane_heads", 4),
         rel_feat_dim=model_cfg.get("rel_feat_dim", 3),
     ).to(device)
 
-    model.load_state_dict(ckpt["model_state_dict"])
+    if is_joint:
+        model.load_state_dict(ckpt["lane_encoder_state_dict"])
+        logger.info("Loaded LaneEncoder from joint checkpoint (lane_encoder_state_dict)")
+    else:
+        model.load_state_dict(ckpt["model_state_dict"])
+
     model.eval()
     return model, config
 
