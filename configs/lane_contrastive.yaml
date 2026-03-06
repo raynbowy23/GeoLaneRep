@@ -69,6 +69,19 @@ contrastive_training:
   # Default held-out camera for leave-one-out eval
   held_out_camera: ["I43_Keefe", "I43_Walnut"]
 
+temporal:
+  window_size_sec: 10.0
+  window_stride_sec: 5.0
+  min_traj_per_window: 2
+  total_time_sec: 60.0
+  gru_layers: 1
+  freeze_encoder: true
+  dropout: 0.1
+  anomaly_ratio: 0.3
+  epochs: 50
+  learning_rate: 0.001
+  batch_size: 16
+
 system:
   device: "auto"
   num_workers: 0

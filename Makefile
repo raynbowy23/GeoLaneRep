@@ -1,7 +1,7 @@
 # Contrastive Lane Encoder — Training & Evaluation
 # =================================================
 
-.PHONY: help train eval-zero-shot viz-contrastive viz-contrastive-all encoder-figures assign assign-cam assign-viz annotate clean
+.PHONY: help train eval-zero-shot viz-contrastive viz-contrastive-all encoder-figures assign assign-cam assign-viz annotate train-temporal temporal-figures clean
 
 PYTHON     ?= python
 CONFIG     ?= configs/lane_contrastive.yaml
@@ -31,6 +31,10 @@ help:
 	@echo "  make assign                        Assign tracklets to lanes (all cameras)"
 	@echo "  make assign-cam CAMERA=X           Assign for one camera"
 	@echo "  make assign-viz                    Visualize lane assignments"
+	@echo ""
+	@echo "Temporal Encoder:"
+	@echo "  make train-temporal                Train temporal encoder (anomaly detection)"
+	@echo "  make temporal-figures              Generate figures 2a/2b/2c"
 	@echo ""
 	@echo "Other:"
 	@echo "  make annotate                      Open the lanelet annotator tool"
@@ -74,6 +78,17 @@ assign-viz:
 annotate:
 	@echo "\033[34mOpening Lanelet Annotator...\033[0m"
 	cd $(ANNOT_DIR) && uv run python main.py
+
+# ── Temporal Encoder ────────────────────────────────────
+
+train-temporal:
+	$(PYTHON) scripts/train_temporal.py --config $(CONFIG) \
+		--encoder-checkpoint $(if $(CHECKPOINT),$(CHECKPOINT),results/lane_contrastive/checkpoints/best.pt)
+
+temporal-figures:
+	$(PYTHON) scripts/generate_temporal_figures.py --config $(CONFIG) \
+		--checkpoint $(if $(CHECKPOINT),$(CHECKPOINT),results/temporal_encoder/checkpoints/best.pt) \
+		--encoder-checkpoint results/lane_contrastive/checkpoints/best.pt
 
 # ── Cleanup ──────────────────────────────────────────────
 
