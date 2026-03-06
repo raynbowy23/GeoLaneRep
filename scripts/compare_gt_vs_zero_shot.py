@@ -173,11 +173,15 @@ def main():
                     (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
         logger.warning(f"No assignment CSV at {assign_csv}")
 
-    # --- Right panel: zero-shot discovered lanes ---
+    # --- Right panel: annotation-based pseudo-lanes ---
     traj_df = pl.read_csv(str(cam_dir / "trajectory.csv"))
 
-    from src.zero_shot_lanes import discover_lanes
-    pseudo_lanes = discover_lanes(traj_df, (H, W), args.camera, config)
+    from src.data.annotation_loader import load_annotation_json
+    from src.zero_shot_lanes import build_lanes_from_annotation
+    annotation = load_annotation_json(str(cam_dir / "annotation.json"))
+    pseudo_lanes = build_lanes_from_annotation(
+        annotation, traj_df, (H, W), args.camera, config,
+    )
     right = _draw_zero_shot(frame, pseudo_lanes, args.camera)
 
     # --- Combine side by side ---

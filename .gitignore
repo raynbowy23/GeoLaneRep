@@ -2,6 +2,8 @@
 .claude/
 .venv/
 uv.lock
+__pycache__/
+*.pyc
 
 docs/
 dataset/

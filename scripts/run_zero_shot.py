@@ -62,7 +62,6 @@ def main():
     from src.training.zero_shot_eval import encode_lanes, load_trained_encoder
     from src.zero_shot_lanes import (
         build_lanes_from_annotation,
-        discover_lanes,
         predict_lane_properties,
     )
 
@@ -134,18 +133,17 @@ def main():
     logger.info(f"Frame shape: {frame_shape}")
 
     # Step 4: Build pseudo-lanes
-    # Use annotation geometry for lane boundaries (clean evaluation),
-    # fall back to trajectory-only discovery if no annotation exists.
+    # Use annotation geometry for lane boundaries (clean evaluation)
     annot_path = cam_dir / "annotation.json"
-    if annot_path.exists():
-        logger.info(f"Using annotation geometry for lane boundaries")
-        annotation = load_annotation_json(annot_path)
-        pseudo_lanes = build_lanes_from_annotation(
-            annotation, traj_df, frame_shape, args.camera, config,
-        )
-    else:
-        logger.info(f"No annotation found, using trajectory-only lane discovery")
-        pseudo_lanes = discover_lanes(traj_df, frame_shape, args.camera, config)
+    if not annot_path.exists():
+        logger.error(f"No annotation.json found at {annot_path}")
+        return
+
+    logger.info(f"Using annotation geometry for lane boundaries")
+    annotation = load_annotation_json(annot_path)
+    pseudo_lanes = build_lanes_from_annotation(
+        annotation, traj_df, frame_shape, args.camera, config,
+    )
 
     if not pseudo_lanes:
         logger.error("No pseudo-lanes found. Check trajectory/annotation data.")

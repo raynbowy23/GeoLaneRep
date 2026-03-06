@@ -1,16 +1,15 @@
-"""Zero-shot lane detection from contrastive encoder.
+"""Zero-shot lane property prediction from contrastive encoder.
 
-Given a new camera with only trajectory.csv (no annotation), discovers
-pseudo-lanes from trajectory behavior and predicts lane properties by
-matching to a reference bank of annotated camera embeddings.
+Given a camera with annotation geometry and trajectory data, builds
+pseudo-lanes from annotation waypoints (for lane boundaries) and predicts
+lane properties via the trained encoder's regression heads.
 
 Pipeline:
-    trajectory.csv (new camera)
-        → density contour detection → lane groups + headings
-        → per group: lateral clustering → pseudo-lanes
+    annotation.json + trajectory.csv
+        → annotation-based lane building (trajectory assignment)
         → encode trajectory-only (geometry=zeros)
-        → cosine match to reference bank
-        → output: predicted lateral_rank, edge flags, lane_count
+        → regression heads → predicted lateral_rank, edge flags, lane_count
+        → cosine match to reference bank (diagnostic only)
 """
 
 import logging
@@ -21,14 +20,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import polars as pl
 import torch
-from scipy.signal import find_peaks
-from scipy.stats import gaussian_kde
 
-from src.data.density_contours import (
-    _compute_track_stats,
-    _detect_lane_groups_density,
-    assign_tracklets_to_contours,
-)
 from src.data.lane_dataset import LaneDataset, _compute_traj_stats, point_to_polyline_dist
 from src.models.lane_encoder import LaneEncoder
 
@@ -183,254 +175,6 @@ def build_lanes_from_annotation(
         f"({len(annotation.get('lane_groups', []))} groups)"
     )
     return pseudo_lanes
-
-
-def discover_lanes(
-    traj_df: pl.DataFrame,
-    frame_shape: Tuple[int, int],
-    camera: str,
-    config: Optional[dict] = None,
-) -> List[PseudoLane]:
-    """Discover lanes from trajectory data alone (no annotation).
-
-    1. Detect lane groups via density contours
-    2. Per group: lateral clustering of trajectories → pseudo-lanes
-    3. Return list of PseudoLane dataclasses
-
-    Args:
-        traj_df: DataFrame with 'id', 'x', 'y' columns (pixel coordinates).
-        frame_shape: (height, width) of the camera frame.
-        camera: Camera name (for lane_key generation).
-        config: Optional config dict for density contour parameters.
-
-    Returns:
-        List of discovered PseudoLane objects.
-    """
-    fh, fw = frame_shape
-    image_wh = np.array([fw, fh], dtype=np.float64)
-
-    cfg = config or {}
-    density_cfg = cfg.get("density_contours", {})
-
-    # Step 1: Detect lane groups
-    # Use lower thresholds for zero-shot: smaller groups and shorter extents
-    # are valid lane groups that would otherwise be filtered.
-    contours, group_headings, track_stats = _detect_lane_groups_density(
-        traj_df, frame_shape,
-        min_track_points=density_cfg.get("min_track_points", 5),
-        min_gap_deg=density_cfg.get("min_gap_deg", 45.0),
-        min_vehicles_per_group=density_cfg.get("min_vehicles_per_group", 3),
-        min_extent_ratio=density_cfg.get("min_extent_ratio", 0.15),
-        min_road_vehicle_pct=density_cfg.get("min_road_vehicle_pct", 0.02),
-    )
-
-    if not contours or track_stats is None or len(track_stats) == 0:
-        logger.warning("No lane groups detected")
-        return []
-
-    logger.info(f"Detected {len(contours)} lane groups")
-
-    # Get per-vehicle stats
-    veh_ids = track_stats["id"].to_numpy()
-    mean_xs = track_stats["mean_x"].to_numpy()
-    mean_ys = track_stats["mean_y"].to_numpy()
-
-    # Assign vehicles to contours
-    centroids_px = np.column_stack([mean_xs, mean_ys])
-    veh_contour_labels = assign_tracklets_to_contours(
-        centroids_px, contours, frame_shape,
-    )
-
-    # Build per-vehicle trajectory lookup (normalized)
-    id_col = "id" if "id" in traj_df.columns else "track_id"
-    veh_trajectories: Dict[int, np.ndarray] = {}
-    min_pts = density_cfg.get("min_track_points", 5)
-    for vid, group in traj_df.group_by(id_col):
-        vid_val = vid[0] if isinstance(vid, tuple) else vid
-        pts = np.column_stack([
-            group["x"].to_numpy(),
-            group["y"].to_numpy(),
-        ]).astype(np.float64) / image_wh
-        if len(pts) >= min_pts:
-            veh_trajectories[vid_val] = pts
-
-    # Build id -> index mapping for track_stats
-    id_to_idx = {int(vid): i for i, vid in enumerate(veh_ids)}
-
-    pseudo_lanes: List[PseudoLane] = []
-
-    for gid, heading_rad in group_headings.items():
-        if gid >= len(contours):
-            continue
-
-        # Get vehicles in this group
-        in_group = veh_contour_labels == gid
-        group_veh_ids = veh_ids[in_group]
-
-        if len(group_veh_ids) < 3:
-            continue
-
-        group_xs = mean_xs[in_group]
-        group_ys = mean_ys[in_group]
-
-        # Compute perpendicular axis from group heading.
-        # Fold heading to [0, π) so opposite-direction groups on the same
-        # road use the same perpendicular axis → consistent lateral rank.
-        canonical_heading = heading_rad % np.pi
-        tangent = np.array([np.cos(canonical_heading), np.sin(canonical_heading)])
-        perp = np.array([-tangent[1], tangent[0]])
-
-        # Project vehicle centroids onto perpendicular axis (normalized coords)
-        centroids_norm = np.column_stack([group_xs, group_ys]) / image_wh
-        lateral_offsets = centroids_norm @ perp
-
-        # Step 2: 1D peak finding for lane detection
-        # Lane width from model config, or fallback to 0.012 (~15px at 1280w)
-        model_cfg = cfg.get("model", {})
-        lane_width = model_cfg.get("fixed_lane_width", 0.012)
-        n_lanes, lane_assignments, lane_centers = _lateral_clustering(
-            lateral_offsets, lane_width=lane_width,
-        )
-
-        logger.info(
-            f"Group {gid}: heading={np.degrees(heading_rad):.1f}°, "
-            f"{len(group_veh_ids)} vehicles, {n_lanes} lanes"
-        )
-
-        # Step 3: Build pseudo-lanes
-        for lane_idx in range(n_lanes):
-            lane_mask = lane_assignments == lane_idx
-            lane_veh_ids = group_veh_ids[lane_mask]
-
-            # Collect trajectories for this lane
-            trajs = []
-            for vid in lane_veh_ids:
-                vid_int = int(vid)
-                if vid_int in veh_trajectories:
-                    trajs.append(veh_trajectories[vid_int])
-
-            if not trajs:
-                continue
-
-            # Compute representative geometry (mean trajectory) for traj_stats
-            # Use mean of all trajectory centroids as pseudo-geometry
-            all_pts = np.concatenate(trajs, axis=0)
-            pseudo_wp = _compute_mean_polyline(trajs)
-
-            max_traj_count = max(
-                int(np.sum(lane_assignments == li)) for li in range(n_lanes)
-            )
-            stats = _compute_traj_stats(trajs, pseudo_wp, max_traj_count)
-
-            lane_key = f"{camera}_{gid}_{lane_idx}"
-            pseudo_lanes.append(PseudoLane(
-                group_id=gid,
-                lane_idx=lane_idx,
-                lane_key=lane_key,
-                heading_rad=heading_rad,
-                trajectories=trajs,
-                traj_stats=stats,
-                lateral_center=float(lane_centers[lane_idx]),
-                n_lanes_in_group=n_lanes,
-            ))
-
-    logger.info(f"Discovered {len(pseudo_lanes)} pseudo-lanes")
-    return pseudo_lanes
-
-
-def _lateral_clustering(
-    offsets: np.ndarray,
-    lane_width: float = 0.012,
-) -> Tuple[int, np.ndarray, np.ndarray]:
-    """Cluster vehicles laterally using 1D Gaussian KDE + peak finding.
-
-    Bandwidth is adaptive: uses the smaller of a lane-width-based estimate
-    and a data-driven estimate (IQR-based), so it works both for wide US12
-    lanes (~0.012 spacing) and narrow I43 lanes (~0.003-0.01 spacing).
-
-    Args:
-        offsets: (N,) perpendicular offsets in normalized coordinates.
-        lane_width: Expected lane width in normalized coords (~0.012).
-            Used as upper bound for bandwidth.
-
-    Returns:
-        (n_lanes, assignments, lane_centers)
-        - n_lanes: number of detected lanes
-        - assignments: (N,) lane index per vehicle
-        - lane_centers: (n_lanes,) lateral center of each lane
-    """
-    N = len(offsets)
-    if N < 3:
-        return 1, np.zeros(N, dtype=int), np.array([offsets.mean()])
-
-    offset_range = offsets.max() - offsets.min()
-    if offset_range < 1e-6:
-        return 1, np.zeros(N, dtype=int), np.array([offsets.mean()])
-
-    # Adaptive bandwidth: pick the narrower of two estimates.
-    # 1) Lane-width based: half the expected lane width
-    bw_lane = lane_width * 0.5
-    # 2) Data-driven: IQR-based (robust to outliers), scaled down to
-    #    resolve structure within the distribution rather than smooth it.
-    #    Factor 0.15 is empirically chosen to resolve lanes with gaps
-    #    as small as ~0.005 in normalized coords.
-    iqr = np.percentile(offsets, 75) - np.percentile(offsets, 25)
-    bw_data = max(iqr * 0.15, 1e-4)
-    bw = min(bw_lane, bw_data)
-
-    std = offsets.std()
-    if std < 1e-8:
-        return 1, np.zeros(N, dtype=int), np.array([offsets.mean()])
-
-    try:
-        kde = gaussian_kde(offsets, bw_method=bw / std)
-    except (np.linalg.LinAlgError, ZeroDivisionError):
-        return 1, np.zeros(N, dtype=int), np.array([offsets.mean()])
-
-    # Evaluate KDE on fine grid
-    margin = max(lane_width, bw * 4)
-    grid = np.linspace(offsets.min() - margin,
-                       offsets.max() + margin, 2000)
-    density = kde(grid)
-
-    # Minimum peak distance: adaptive — use half the median nearest-neighbor
-    # distance among the offsets, floored at a very small value.
-    # This adapts to the actual lane spacing in the data.
-    sorted_offsets = np.sort(offsets)
-    nn_dists = np.diff(sorted_offsets)
-    nn_dists = nn_dists[nn_dists > 1e-6]  # filter duplicates
-    if len(nn_dists) > 0:
-        min_peak_dist = max(np.median(nn_dists) * 0.3, bw * 0.5)
-    else:
-        min_peak_dist = bw
-    grid_spacing = grid[1] - grid[0]
-    min_dist_idx = max(1, int(min_peak_dist / grid_spacing))
-
-    # Low prominence: 2% of max to catch minority-traffic lanes
-    prominence = density.max() * 0.02
-
-    peak_indices, _ = find_peaks(
-        density, distance=min_dist_idx, prominence=prominence,
-    )
-
-    if len(peak_indices) == 0:
-        return 1, np.zeros(N, dtype=int), np.array([offsets.mean()])
-
-    lane_centers = grid[peak_indices]
-
-    # Assign each vehicle to nearest peak
-    dists = np.abs(offsets[:, None] - lane_centers[None, :])  # (N, K)
-    assignments = dists.argmin(axis=1)
-
-    # Sort lanes by lateral position (leftmost = 0)
-    sort_order = np.argsort(lane_centers)
-    new_centers = lane_centers[sort_order]
-    remap = np.zeros(len(sort_order), dtype=int)
-    for new_idx, old_idx in enumerate(sort_order):
-        remap[old_idx] = new_idx
-    assignments = remap[assignments]
-
-    return len(new_centers), assignments, new_centers
 
 
 def _compute_mean_polyline(

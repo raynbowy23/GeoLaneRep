@@ -181,6 +181,12 @@ def evaluate_zero_shot(
             "matched_ref": ref_keys[best_match_idx[i].item()],
             "cosine_sim": best_match_sim[i].item(),
             "lat_rank_diff": lat_rank_diff[i].item(),
+            "query_lat_rank": query_roles[i, 0].item(),
+            "matched_lat_rank": matched_ref_roles[i, 0].item(),
+            "query_is_leftmost": bool(query_roles[i, 1].item()),
+            "query_is_rightmost": bool(query_roles[i, 2].item()),
+            "matched_is_leftmost": bool(matched_ref_roles[i, 1].item()),
+            "matched_is_rightmost": bool(matched_ref_roles[i, 2].item()),
             "role_sim": role_sim[i].item(),
         })
 
