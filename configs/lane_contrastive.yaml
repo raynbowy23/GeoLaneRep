@@ -69,6 +69,21 @@ contrastive_training:
   # Default held-out camera for leave-one-out eval
   held_out_camera: ["I43_Keefe", "I43_Walnut"]
 
+joint_training:
+  epochs: 200
+  batch_size: 16
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  warmup_epochs: 10
+  grad_clip_norm: 1.0
+  temporal_weight: 1.0            # alpha: weight for temporal BCE loss
+  contrastive_weight: 1.0         # beta: weight for contrastive InfoNCE + role loss
+  role_weight: 2.0                # weight for role regression within contrastive loss
+  anomaly_ratio: 0.3
+  val_frequency: 5
+  checkpoint_frequency: 10
+  held_out_camera: ["I43_Keefe", "I43_Walnut"]
+
 temporal:
   window_size_sec: 10.0
   window_stride_sec: 5.0

@@ -28,6 +28,7 @@ from src.data.lane_dataset import (
     _compute_lane_roles,
     _compute_traj_stats,
     point_to_polyline_dist,
+    LaneDataset,
 )
 
 logger = logging.getLogger(__name__)
@@ -107,10 +108,12 @@ class TemporalLaneDataset(Dataset):
         cameras: Optional[List[str]] = None,
         polyline_k: int = 16,
         max_traj_per_window: int = 50,
+        role_similarity_threshold: float = 0.8,
     ):
         self.config = config
         self.polyline_k = polyline_k
         self.max_traj_per_window = max_traj_per_window
+        self.role_sim_thresh = role_similarity_threshold
         self._rng = np.random.default_rng(42)
 
         data_cfg = config.get("data", {})
@@ -163,6 +166,7 @@ class TemporalLaneDataset(Dataset):
 
         # Build samples
         self.samples: List[TemporalLaneSample] = []
+        self._camera_indices: Dict[str, List[int]] = {}
 
         for cam in cameras:
             annot_path = annot_dir / cam / "annotation.json"
@@ -174,6 +178,7 @@ class TemporalLaneDataset(Dataset):
             annotation = load_annotation_json(annot_path)
             traj_df = pl.read_csv(str(traj_path))
 
+            cam_indices = []
             for lg in annotation["lane_groups"]:
                 gid = lg["group_id"]
                 roles = _compute_lane_roles(
@@ -210,11 +215,18 @@ class TemporalLaneDataset(Dataset):
                         role=roles[cls_id],
                         window_valid=window_valid,
                     )
+                    cam_indices.append(len(self.samples))
                     self.samples.append(sample)
+
+            self._camera_indices[cam] = cam_indices
+
+        # Pre-compute positive pairs for contrastive learning
+        self._positive_pairs = self._mine_positive_pairs()
 
         logger.info(
             f"TemporalLaneDataset: {len(self.samples)} lanes, "
-            f"{self.n_windows} windows per lane"
+            f"{self.n_windows} windows per lane, "
+            f"{len(self._positive_pairs)} positive pairs"
         )
 
     def _assign_trajectories_with_time(
@@ -340,6 +352,41 @@ class TemporalLaneDataset(Dataset):
             window_stats.append(stats)
 
         return window_trajs, window_stats, window_valid
+
+    def _mine_positive_pairs(self) -> List[Tuple[int, int]]:
+        """Mine positive pairs: same structural role, different camera.
+
+        Same criteria as LaneDataset._mine_positive_pairs().
+        """
+        pairs = []
+        n = len(self.samples)
+        for i in range(n):
+            for j in range(i + 1, n):
+                si, sj = self.samples[i], self.samples[j]
+                if si.camera == sj.camera:
+                    continue
+                rank_diff = abs(si.role.lateral_rank - sj.role.lateral_rank)
+                if rank_diff > 0.15:
+                    continue
+                if si.role.is_leftmost != sj.role.is_leftmost:
+                    continue
+                if si.role.is_rightmost != sj.role.is_rightmost:
+                    continue
+                sim = LaneDataset._role_similarity(si.role, sj.role)
+                if sim >= self.role_sim_thresh:
+                    pairs.append((i, j))
+        return pairs
+
+    @property
+    def positive_pairs(self) -> List[Tuple[int, int]]:
+        return self._positive_pairs
+
+    @property
+    def cameras(self) -> List[str]:
+        return list(self._camera_indices.keys())
+
+    def get_camera_indices(self, camera: str) -> List[int]:
+        return self._camera_indices.get(camera, [])
 
     def __len__(self):
         return len(self.samples)
