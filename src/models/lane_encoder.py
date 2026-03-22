@@ -16,8 +16,9 @@ Optional cross-lane attention (gated by use_cross_lane_attention):
         -> Unpacked back to flat batch
 
 Roles (lateral_rank, edge flags, group_size) are concatenated with traj_stats
-as encoder input (stats_dim=9). The regression heads also predict roles as
-targets, providing direct supervision signal for learning.
+as encoder input (stats_dim=9 = 4 traj_stats + 5 role descriptor). They are
+also used in the contrastive loss (positive pair mining) and as regression
+targets (auxiliary supervision).
 """
 
 import torch
@@ -153,7 +154,7 @@ class LaneEncoder(nn.Module):
         polyline_mode: "transformer" or "mlp".
         polyline_layers: Number of transformer layers.
         polyline_heads: Number of attention heads.
-        stats_dim: Dimension of stats input (default 9 = 4 traj_stats + 5 roles).
+        stats_dim: Dimension of stats input (default 9 = 4 traj_stats + 5 role descriptor).
         geometry_dropout: Probability of dropping geometry input during training
             to force trajectory-only learning for zero-shot.
         dropout: General dropout rate.
@@ -386,7 +387,7 @@ class LaneEncoder(nn.Module):
             geometry: (B, K, 2) lane annotation waypoints.
             traj_polylines: (B, T, K, 2) assigned trajectory polylines.
             traj_mask: (B, T) boolean mask for valid trajectories.
-            traj_stats: (B, 4) aggregate trajectory statistics.
+            traj_stats: (B, S) aggregate trajectory statistics (S = stats_dim).
             drop_geometry: If True, zero out geometry embedding. If None,
                 uses stochastic dropout during training.
 
@@ -415,7 +416,7 @@ class LaneEncoder(nn.Module):
             geometry: (B, K, 2) lane annotation waypoints.
             traj_polylines: (B, T, K, 2) assigned trajectory polylines.
             traj_mask: (B, T) boolean mask for valid trajectories.
-            traj_stats: (B, 4) aggregate trajectory statistics.
+            traj_stats: (B, S) aggregate trajectory statistics (S = stats_dim).
             group_ids: (B,) integer group id per lane.
             drop_geometry: If True, zero out geometry embedding.
 

@@ -1,10 +1,14 @@
-"""Zero-shot lane assignment evaluation for contrastive lane embeddings.
+"""Cross-camera lane alignment evaluation for contrastive lane embeddings.
 
 Given a trained LaneEncoder:
-1. Encode all training-camera lanes (with geometry) -> reference bank
-2. On held-out camera: encode lanes using trajectory-only (geometry dropped)
+1. Encode all training-camera lanes (full-info: geometry + traj + roles) -> reference bank
+2. On held-out camera: encode lanes (full-info) -> query set
 3. Match via cosine similarity
-4. Compare to geometric baseline (LaneAssigner)
+4. Evaluate cross-camera alignment quality
+
+All inputs (geometry from annotation, roles from OSM, trajectories from tracking)
+are freely available at deployment — this tests cross-camera generalization,
+not zero-shot inference.
 """
 
 import logging
@@ -72,6 +76,7 @@ def encode_lanes(
     loader: DataLoader,
     device: torch.device,
     drop_geometry: bool = False,
+    drop_roles: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, List[str]]:
     """Encode all lanes in a dataloader.
 
@@ -80,6 +85,7 @@ def encode_lanes(
         loader: DataLoader yielding batches.
         device: torch device.
         drop_geometry: If True, zero out geometry (trajectory-only encoding).
+        drop_roles: If True, zero out the role portion of stats_input.
 
     Returns:
         (projections, roles, lane_keys) — all concatenated across batches.
@@ -89,7 +95,14 @@ def encode_lanes(
     all_keys = []
 
     for batch in loader:
-        stats_input = torch.cat([batch["traj_stats"], batch["roles"]], dim=-1).to(device)
+        # Concatenate traj_stats + roles as encoder input
+        roles_tensor = batch["roles"].to(device)
+        if drop_roles:
+            roles_tensor = torch.zeros_like(roles_tensor)
+        stats_input = torch.cat([
+            batch["traj_stats"].to(device),
+            roles_tensor,
+        ], dim=-1)
         if model.use_cross_lane_attention and "group_ids" in batch:
             output = model.forward_grouped(
                 geometry=batch["geometry"].to(device),
@@ -123,13 +136,16 @@ def evaluate_zero_shot(
     device: torch.device,
     batch_size: int = 32,
 ) -> dict:
-    """Run zero-shot evaluation for a single held-out camera.
+    """Run cross-camera alignment evaluation for a single held-out camera.
 
     Steps:
-    1. Encode training lanes (with geometry) -> reference bank
-    2. Encode held-out lanes (trajectory-only) -> query set
+    1. Encode training lanes (full-info) -> reference bank
+    2. Encode held-out lanes (full-info) -> query set
     3. Match queries to references via cosine similarity
-    4. Evaluate: lateral rank difference, edge flag accuracy, role similarity
+    4. Evaluate: lateral rank difference, edge flag F1, role similarity
+
+    Both query and reference use full-info encoding (geometry + traj + roles)
+    since all inputs are freely available at deployment.
 
     Returns:
         Dict of evaluation metrics.
@@ -160,7 +176,7 @@ def evaluate_zero_shot(
         model, train_loader, device, drop_geometry=False
     )
     query_proj, query_roles, query_keys = encode_lanes(
-        model, eval_loader, device, drop_geometry=True
+        model, eval_loader, device, drop_geometry=False
     )
 
     # Match: cosine similarity (projections already L2-normalized)
@@ -219,10 +235,11 @@ def leave_one_camera_out_eval(
     checkpoint_path: str,
     config_path: Optional[str] = None,
 ) -> Dict[str, dict]:
-    """Run leave-one-camera-out zero-shot evaluation.
+    """Run leave-one-camera-out cross-camera alignment evaluation.
 
-    For each camera, hold it out, encode training lanes with geometry,
-    encode held-out lanes trajectory-only, and evaluate matching quality.
+    For each camera, hold it out, encode training lanes (full-info),
+    encode held-out lanes (full-info), and evaluate matching quality.
+    Tests cross-camera generalization of the learned embedding space.
 
     Args:
         checkpoint_path: Path to trained model checkpoint.

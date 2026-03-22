@@ -91,7 +91,7 @@ class LaneTemporalEncoder(nn.Module):
             window_traj_mask: (B, W, T) boolean mask for valid trajectories.
             window_traj_stats: (B, W, 4) per-window trajectory statistics.
             window_valid: (B, W) boolean mask for valid windows.
-            roles: (B, 5) role descriptors (concatenated with stats for encoder).
+            roles: (B, R) role descriptors (concatenated with stats for encoder).
 
         Returns:
             Dict with keys:
@@ -111,9 +111,9 @@ class LaneTemporalEncoder(nn.Module):
         # Build stats input: (B, W, 4) -> (B*W, stats_dim)
         # Concatenate roles if provided (same as contrastive training)
         if roles is not None:
-            # Expand roles across windows: (B, 5) -> (B, W, 5)
-            roles_exp = roles.unsqueeze(1).expand(B, W, 5)
-            stats_input = torch.cat([window_traj_stats, roles_exp], dim=-1)  # (B, W, 9)
+            R = roles.shape[-1]
+            roles_exp = roles.unsqueeze(1).expand(B, W, R)
+            stats_input = torch.cat([window_traj_stats, roles_exp], dim=-1)  # (B, W, 4+R)
         else:
             stats_input = window_traj_stats  # (B, W, 4)
 

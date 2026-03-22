@@ -449,7 +449,7 @@ class ContrastiveTrainer:
             indices = batch["idx"]
 
             # Concatenate traj_stats + roles as encoder input
-            stats_input = torch.cat([traj_stats, roles], dim=-1)  # (B, 9)
+            stats_input = torch.cat([traj_stats, roles], dim=-1)
 
             # Forward
             if self.use_cross_lane_attention:
@@ -515,7 +515,10 @@ class ContrastiveTrainer:
         train_embeddings = []
         train_roles = []
         for batch in train_loader:
-            stats_input = torch.cat([batch["traj_stats"], batch["roles"]], dim=-1).to(self.device)
+            stats_input = torch.cat([
+                batch["traj_stats"].to(self.device),
+                batch["roles"].to(self.device),
+            ], dim=-1)
             if self.use_cross_lane_attention:
                 output = self.model.forward_grouped(
                     geometry=batch["geometry"].to(self.device),
@@ -541,7 +544,10 @@ class ContrastiveTrainer:
         eval_embeddings = []
         eval_roles = []
         for batch in eval_loader:
-            stats_input = torch.cat([batch["traj_stats"], batch["roles"]], dim=-1).to(self.device)
+            stats_input = torch.cat([
+                batch["traj_stats"].to(self.device),
+                batch["roles"].to(self.device),
+            ], dim=-1)
             if self.use_cross_lane_attention:
                 output = self.model.forward_grouped(
                     geometry=batch["geometry"].to(self.device),

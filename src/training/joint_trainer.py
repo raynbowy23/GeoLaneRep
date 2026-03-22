@@ -88,7 +88,7 @@ class JointTrainer:
             stats_dim=model_cfg.get("stats_dim", 9),
             geometry_dropout=model_cfg.get("geometry_dropout", 0.5),
             dropout=model_cfg.get("dropout", 0.1),
-            use_cross_lane_attention=False,  # Per-lane encoding only for joint
+            use_cross_lane_attention=False,  # Cross-attn requires grouped batching incompatible with temporal windows
         )
 
         # Optional warm-start from contrastive checkpoint
@@ -150,7 +150,8 @@ class JointTrainer:
 
         # Paths
         self.save_dir = Path(exp_cfg.get("saving_path", "./results"))
-        self.exp_name = "joint_encoder"
+        self.exp_name = joint_cfg.get("experiment_name",
+                                      exp_cfg.get("experiment_name", "joint_encoder"))
         self.exp_dir = self.save_dir / self.exp_name
         self.exp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -252,17 +253,56 @@ class JointTrainer:
             n_valid = valid_mask_float.sum().clamp(min=1.0)
             temporal_loss = temporal_loss / n_valid
 
-            # 4. Contrastive loss: InfoNCE + role regression
-            contrastive_loss, ctr_metrics = self.contrastive_criterion(
-                output["projection"],
-                indices,
-                positive_pairs,
-                roles=roles,
-                pred_rank=output["pred_rank"],
-                pred_edge=output["pred_edge"],
-                pred_size=output["pred_size"],
-                epoch=epoch,
-            )
+            # 4. Window-level contrastive loss: InfoNCE per valid window, averaged
+            window_proj = output["window_projections"]  # (B, W, proj_dim)
+            W = window_proj.shape[1]
+
+            window_ctr_losses = []
+            window_ctr_metrics_accum = defaultdict(float)
+            n_valid_windows = 0
+
+            for w in range(W):
+                # Only compute on windows where enough lanes are valid
+                w_valid = window_valid[:, w]  # (B,)
+                if w_valid.sum() < 2:
+                    continue
+
+                w_valid_cpu = w_valid.cpu()
+                w_proj = window_proj[w_valid, w]  # (B_valid, proj_dim)
+                w_indices = indices[w_valid_cpu]
+
+                # Role regression only on first window to avoid redundant computation
+                if w == 0:
+                    w_loss, w_metrics = self.contrastive_criterion(
+                        w_proj, w_indices, positive_pairs,
+                        roles=roles[w_valid],
+                        pred_rank=output["pred_rank"][w_valid],
+                        pred_edge=output["pred_edge"][w_valid],
+                        pred_size=output["pred_size"][w_valid],
+                        epoch=epoch,
+                    )
+                else:
+                    w_loss, w_metrics = self.contrastive_criterion(
+                        w_proj, w_indices, positive_pairs,
+                        roles=None, pred_rank=None, pred_edge=None, pred_size=None,
+                        epoch=epoch,
+                    )
+
+                if not (torch.isnan(w_loss) or torch.isinf(w_loss)):
+                    window_ctr_losses.append(w_loss)
+                    for mk, mv in w_metrics.items():
+                        window_ctr_metrics_accum[mk] += mv
+                    n_valid_windows += 1
+
+            if window_ctr_losses:
+                contrastive_loss = torch.stack(window_ctr_losses).mean()
+                ctr_metrics = {
+                    k: v / n_valid_windows
+                    for k, v in window_ctr_metrics_accum.items()
+                }
+            else:
+                contrastive_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
+                ctr_metrics = {}
 
             # 5. Total loss
             total_loss = (

@@ -83,17 +83,31 @@ class LaneRole:
     has_successor: bool       # lane continues into next segment (merge/exit)
     group_size: float         # normalized lane count (n_lanes / max_across_dataset)
 
-    def to_tensor(self) -> torch.Tensor:
-        return torch.tensor(
-            [
-                self.lateral_rank,
-                float(self.is_leftmost),
-                float(self.is_rightmost),
-                float(self.has_successor),
-                self.group_size,
-            ],
-            dtype=torch.float32,
-        )
+    # Group-relative behavioral features (z-scores within group)
+    relative_speed: float = 0.0
+    relative_density: float = 0.0
+    relative_curvature: float = 0.0
+
+    def to_tensor(self, include_group_relative: bool = False) -> torch.Tensor:
+        """Role tensor. 5 dims structural, or 8 dims with group-relative."""
+        vals = [
+            self.lateral_rank,
+            float(self.is_leftmost),
+            float(self.is_rightmost),
+            float(self.has_successor),
+            self.group_size,
+        ]
+        if include_group_relative:
+            vals.extend([
+                self.relative_speed,
+                self.relative_density,
+                self.relative_curvature,
+            ])
+        return torch.tensor(vals, dtype=torch.float32)
+
+    def structural_tensor(self) -> torch.Tensor:
+        """Structural role tensor (5 dims) for similarity computation."""
+        return self.to_tensor(include_group_relative=False)
 
 
 @dataclass
@@ -187,6 +201,46 @@ def _compute_lane_roles(
     return roles
 
 
+def _add_group_relative_features(
+    roles: Dict[int, LaneRole],
+    group_stats: Dict[int, np.ndarray],
+) -> None:
+    """Add group-relative behavioral features to roles in-place.
+
+    For each lane, computes z-score of speed, density, and curvature
+    relative to its group. Provides cross-lane context without attention.
+
+    Args:
+        roles: Dict mapping cls_id -> LaneRole (modified in-place).
+        group_stats: Dict mapping cls_id -> (4,) traj stats array.
+    """
+    common_ids = [c for c in roles if c in group_stats]
+    if len(common_ids) < 2:
+        return  # single-lane group: relative features stay at 0
+
+    stats_matrix = np.stack([group_stats[c] for c in common_ids])  # (N, 4)
+    # stats: [mean_speed, mean_curvature, mean_lateral_offset, traj_count_norm]
+    speeds = stats_matrix[:, 0]
+    curvatures = stats_matrix[:, 1]
+    densities = stats_matrix[:, 3]
+
+    eps = 1e-6
+    speed_mean, speed_std = speeds.mean(), speeds.std()
+    curv_mean, curv_std = curvatures.mean(), curvatures.std()
+    dens_mean, dens_std = densities.mean(), densities.std()
+
+    for i, cls_id in enumerate(common_ids):
+        roles[cls_id].relative_speed = float(
+            (speeds[i] - speed_mean) / (speed_std + eps)
+        )
+        roles[cls_id].relative_curvature = float(
+            (curvatures[i] - curv_mean) / (curv_std + eps)
+        )
+        roles[cls_id].relative_density = float(
+            (densities[i] - dens_mean) / (dens_std + eps)
+        )
+
+
 # ---------------------------------------------------------------------------
 # Trajectory statistics
 # ---------------------------------------------------------------------------
@@ -273,6 +327,10 @@ class LaneDataset(Dataset):
         self.augment = augment
         self._rng = np.random.default_rng(42)
 
+        # stats_dim > 4 means group-relative features are enabled (legacy)
+        model_cfg = config.get("model", {})
+        self.use_group_relative = model_cfg.get("stats_dim", 9) > 9
+
         data_cfg = config.get("data", {})
         annot_dir = Path(data_cfg.get("annotation_dir", "../dataset/preprocess"))
         image_w = data_cfg.get("image_width", 1920)
@@ -335,6 +393,24 @@ class LaneDataset(Dataset):
                 # Assign trajectories to lanes using simple geometric scoring
                 lane_trajectories = self._assign_trajectories(lanes, traj_df)
 
+                # Compute stats for all lanes in group first
+                max_traj_count = max(
+                    len(v) for v in lane_trajectories.values()
+                ) if lane_trajectories else 1
+
+                group_stats = {}
+                for lane in lanes:
+                    cls_id = lane["cls_id"]
+                    if cls_id not in roles:
+                        continue
+                    trajs = lane_trajectories.get(cls_id, [])
+                    group_stats[cls_id] = _compute_traj_stats(
+                        trajs, lane["waypoints"], max_traj_count
+                    )
+
+                # Add group-relative features to roles
+                _add_group_relative_features(roles, group_stats)
+
                 for lane in lanes:
                     cls_id = lane["cls_id"]
                     if cls_id not in roles:
@@ -343,15 +419,6 @@ class LaneDataset(Dataset):
                     lane_key = f"{cam}_{gid}_{cls_id}"
                     trajs = lane_trajectories.get(cls_id, [])
 
-                    # Compute max traj count for normalization
-                    max_traj_count = max(
-                        len(v) for v in lane_trajectories.values()
-                    ) if lane_trajectories else 1
-
-                    stats = _compute_traj_stats(
-                        trajs, lane["waypoints"], max_traj_count
-                    )
-
                     sample = LaneSample(
                         camera=cam,
                         group_id=gid,
@@ -359,7 +426,7 @@ class LaneDataset(Dataset):
                         lane_key=lane_key,
                         geometry=lane["waypoints"],
                         trajectories=trajs,
-                        traj_stats=stats,
+                        traj_stats=group_stats[cls_id],
                         role=roles[cls_id],
                     )
                     cam_indices.append(len(self.samples))
@@ -458,9 +525,9 @@ class LaneDataset(Dataset):
 
     @staticmethod
     def _role_similarity(a: LaneRole, b: LaneRole) -> float:
-        """Cosine-like similarity between two lane roles."""
-        va = a.to_tensor()
-        vb = b.to_tensor()
+        """Cosine-like similarity between two lane roles (structural only)."""
+        va = a.structural_tensor()
+        vb = b.structural_tensor()
         dot = (va * vb).sum()
         norm_a = va.norm() + 1e-8
         norm_b = vb.norm() + 1e-8
@@ -514,7 +581,7 @@ class LaneDataset(Dataset):
             "geometry": torch.tensor(geometry, dtype=torch.float32),    # (K, 2)
             "traj_polylines": traj_polylines,                            # list of (K, 2)
             "traj_stats": torch.tensor(sample.traj_stats, dtype=torch.float32),  # (4,)
-            "role": sample.role.to_tensor(),                             # (5,)
+            "role": sample.role.to_tensor(include_group_relative=self.use_group_relative),
             "n_trajs": len(trajs),
         }
 
@@ -594,7 +661,7 @@ def collate_fn(batch: List[dict]) -> dict:
     # Stack fixed-size tensors
     geometry = torch.stack([b["geometry"] for b in batch])           # (B, K, 2)
     traj_stats = torch.stack([b["traj_stats"] for b in batch])      # (B, 4)
-    roles = torch.stack([b["role"] for b in batch])                  # (B, 5)
+    roles = torch.stack([b["role"] for b in batch])                  # (B, R)
     indices = torch.tensor([b["idx"] for b in batch], dtype=torch.long)
 
     # Remap (camera, group_id) pairs to unique integers for group_ids tensor
@@ -627,7 +694,7 @@ def collate_fn(batch: List[dict]) -> dict:
         "traj_polylines": traj_padded,     # (B, max_T, K, 2)
         "traj_mask": traj_mask,            # (B, max_T)
         "traj_stats": traj_stats,          # (B, 4)
-        "roles": roles,                    # (B, 5)
+        "roles": roles,                    # (B, R)
         "group_ids": group_ids,            # (B,)
     }
 

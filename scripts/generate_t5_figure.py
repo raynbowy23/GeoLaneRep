@@ -88,15 +88,14 @@ def figure_t5a(histories: dict, output_dir: Path):
     ax.axhline(0.8, color="gray", linestyle=":", alpha=0.5, label="80% threshold")
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Anomaly Detection Accuracy")
-    ax.set_title("T5a: Anomaly Accuracy — Two-Stage vs Joint Training")
+    ax.set_title("Anomaly Accuracy — Two-Stage vs Joint Training")
     ax.legend(fontsize=9)
     ax.set_ylim(0.4, 1.02)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
 
-    path = output_dir / "t5a_accuracy_curves.pdf"
-    fig.savefig(str(path), dpi=300)
-    fig.savefig(str(path.with_suffix(".png")), dpi=150)
+    path = output_dir / "T5a_accuracy_curves.png"
+    fig.savefig(str(path), dpi=150)
     plt.close(fig)
     logger.info(f"Saved T5a to {path}")
 
@@ -133,12 +132,11 @@ def figure_t5b(histories: dict, output_dir: Path):
     ax2.legend(fontsize=9)
     ax2.grid(True, alpha=0.3)
 
-    fig.suptitle("T5b: Contrastive Quality — Joint Training Variants", fontsize=13)
+    fig.suptitle("Contrastive Quality — Joint Training Variants", fontsize=13)
     fig.tight_layout()
 
-    path = output_dir / "t5b_contrastive_quality.pdf"
-    fig.savefig(str(path), dpi=300)
-    fig.savefig(str(path.with_suffix(".png")), dpi=150)
+    path = output_dir / "T5b_contrastive_quality.png"
+    fig.savefig(str(path), dpi=150)
     plt.close(fig)
     logger.info(f"Saved T5b to {path}")
 
@@ -183,7 +181,7 @@ def summary_table(histories: dict, output_dir: Path):
     print()
 
     # Save CSV
-    csv_path = output_dir / "t5_summary.csv"
+    csv_path = output_dir / "T5_summary.csv"
     with open(csv_path, "w") as f:
         f.write(",".join(header) + "\n")
         for row in rows:
@@ -194,7 +192,7 @@ def summary_table(histories: dict, output_dir: Path):
 def main():
     parser = argparse.ArgumentParser(description="Generate T5 ablation figure")
     parser.add_argument(
-        "--output-dir", default="results/figures/t5",
+        "--output-dir", default="results/joint_encoder/figures",
         help="Output directory for figures",
     )
     parser.add_argument(

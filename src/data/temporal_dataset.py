@@ -27,6 +27,7 @@ from src.data.lane_dataset import (
     LaneRole,
     _compute_lane_roles,
     _compute_traj_stats,
+    _add_group_relative_features,
     point_to_polyline_dist,
     LaneDataset,
 )
@@ -116,6 +117,9 @@ class TemporalLaneDataset(Dataset):
         self.role_sim_thresh = role_similarity_threshold
         self._rng = np.random.default_rng(42)
 
+        model_cfg = config.get("model", {})
+        self.use_group_relative = model_cfg.get("stats_dim", 9) > 9
+
         data_cfg = config.get("data", {})
         annot_dir = Path(data_cfg.get("annotation_dir", "../dataset/preprocess"))
         image_w = data_cfg.get("image_width", 1920)
@@ -190,6 +194,23 @@ class TemporalLaneDataset(Dataset):
                 lane_traj_with_time = self._assign_trajectories_with_time(
                     lanes, traj_df
                 )
+
+                # Compute aggregate stats per lane for group-relative features
+                group_agg_stats = {}
+                for lane in lanes:
+                    cls_id = lane["cls_id"]
+                    if cls_id not in roles:
+                        continue
+                    all_trajs = [xy for xy, _ in lane_traj_with_time.get(cls_id, [])]
+                    max_count = max(
+                        (len(lane_traj_with_time.get(l["cls_id"], []))
+                         for l in lanes if l["cls_id"] in roles), default=1
+                    )
+                    group_agg_stats[cls_id] = _compute_traj_stats(
+                        all_trajs, lane["waypoints"], max(max_count, 1)
+                    )
+
+                _add_group_relative_features(roles, group_agg_stats)
 
                 for lane in lanes:
                     cls_id = lane["cls_id"]
@@ -313,21 +334,17 @@ class TemporalLaneDataset(Dataset):
         window_stats: List[np.ndarray] = []
         window_valid: List[bool] = []
 
-        # Normalize time to [0, total_time_sec]
+        # Offset times to start at 0 (real seconds, no scaling)
         if traj_time_pairs:
             all_times = np.concatenate([t for _, t in traj_time_pairs])
             t_min = all_times.min()
-            t_max = all_times.max()
-            t_range = t_max - t_min if t_max > t_min else 1.0
-            time_scale = self.total_time_sec / t_range
         else:
             t_min = 0.0
-            time_scale = 1.0
 
         # Assign each trajectory to windows based on its mean time
         for xy, times in traj_time_pairs:
-            # Normalize time
-            norm_times = (times - t_min) * time_scale
+            # Real seconds from start (no normalization)
+            norm_times = times - t_min
 
             # Use mean time to determine primary window
             mean_t = norm_times.mean()
@@ -442,7 +459,7 @@ class TemporalLaneDataset(Dataset):
             "window_traj_polylines": all_window_traj_polylines,        # W x [list of (K,2)]
             "window_traj_stats": window_traj_stats,                    # (W, 4)
             "window_valid": window_valid,                              # (W,)
-            "role": sample.role.to_tensor(),                           # (5,)
+            "role": sample.role.to_tensor(include_group_relative=self.use_group_relative),
             "n_windows": W,
         }
 
@@ -456,7 +473,7 @@ def temporal_collate_fn(batch: List[dict]) -> dict:
         window_traj_mask: (B, W, T_max) bool
         window_traj_stats: (B, W, 4)
         window_valid: (B, W) bool
-        roles: (B, 5)
+        roles: (B, R) where R is role dimension (5 structural + 3 group-relative)
     """
     B = len(batch)
     K = batch[0]["geometry"].shape[0]
@@ -465,7 +482,7 @@ def temporal_collate_fn(batch: List[dict]) -> dict:
     geometry = torch.stack([b["geometry"] for b in batch])                # (B, K, 2)
     window_traj_stats = torch.stack([b["window_traj_stats"] for b in batch])  # (B, W, 4)
     window_valid = torch.stack([b["window_valid"] for b in batch])        # (B, W)
-    roles = torch.stack([b["role"] for b in batch])                       # (B, 5)
+    roles = torch.stack([b["role"] for b in batch])                       # (B, R)
     indices = torch.tensor([b["idx"] for b in batch], dtype=torch.long)
 
     # Find max trajectory count across all windows and all samples
@@ -495,5 +512,5 @@ def temporal_collate_fn(batch: List[dict]) -> dict:
         "window_traj_mask": traj_mask,               # (B, W, T_max)
         "window_traj_stats": window_traj_stats,      # (B, W, 4)
         "window_valid": window_valid,                # (B, W)
-        "roles": roles,                              # (B, 5)
+        "roles": roles,                              # (B, R)
     }

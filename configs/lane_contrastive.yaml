@@ -70,6 +70,7 @@ contrastive_training:
   held_out_camera: ["I43_Keefe", "I43_Walnut"]
 
 joint_training:
+  experiment_name: "joint_encoder"
   epochs: 200
   batch_size: 16
   learning_rate: 0.0003
@@ -85,10 +86,10 @@ joint_training:
   held_out_camera: ["I43_Keefe", "I43_Walnut"]
 
 temporal:
-  window_size_sec: 10.0
-  window_stride_sec: 5.0
+  window_size_sec: 300.0      # 5 minutes
+  window_stride_sec: 150.0    # 2.5 min stride (50% overlap)
   min_traj_per_window: 2
-  total_time_sec: 60.0
+  total_time_sec: 1800.0      # 30 min observation cap
   gru_layers: 1
   freeze_encoder: true
   dropout: 0.1

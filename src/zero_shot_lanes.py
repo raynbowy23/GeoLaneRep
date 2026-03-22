@@ -407,8 +407,8 @@ def _encode_and_match(
             role_list[i, 3] = 0.0                          # has_successor (unknown)
             role_list[i, 4] = n / max(max_group_size, 1)   # group_size_norm (training scale)
 
-    # Concatenate traj_stats + roles as encoder input (matches training)
-    stats_input = torch.cat([traj_stats, role_list], dim=-1)  # (B, 9)
+    # Concatenate traj_stats + roles as encoder input
+    stats_input = torch.cat([traj_stats, role_list], dim=-1)
 
     max_n_trajs = max(len(tp) for tp in traj_polylines_list)
     traj_padded = torch.zeros(B, max_n_trajs, polyline_k, 2)

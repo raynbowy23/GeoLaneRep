@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
-"""Generate encoder evaluation figures E2–E4.
+"""Generate encoder evaluation figures.
 
 Figures:
-    E2 — Lateral rank prediction: predicted vs ground truth scatter plot
-    E3 — Edge prediction: confusion matrices for leftmost/rightmost flags
-    E4 — Embedding similarity: same-group vs cross-group vs same-rank-cross-camera
+    E2 - Cross-camera lateral rank alignment: matched vs ground truth scatter
+    E4 - Cross-camera behavioral alignment: similarity boxplot + heatmap
 
 Usage:
     python scripts/generate_encoder_figures.py \
-        --checkpoint results/lane_contrastive/checkpoints/best.pt \
-        --output-dir results/lane_contrastive/figures
+        --checkpoint results/joint_encoder/checkpoints/best.pt
 
-    # Or from a pre-saved zero_shot_results.json (no checkpoint needed):
+    # Or from a pre-saved cross-camera results JSON (no checkpoint needed):
     python scripts/generate_encoder_figures.py \
-        --results-json results/lane_contrastive/zero_shot_results.json \
-        --output-dir results/lane_contrastive/figures
+        --results-json results/joint_encoder/cross_camera_results.json
 """
 
 import sys
@@ -47,7 +44,7 @@ def _load_eval_data(args):
     """Load encoder evaluation data from checkpoint (full recompute) or results JSON.
 
     Returns:
-        all_results: dict mapping camera -> evaluate_zero_shot() output
+        all_results: dict mapping camera -> cross-camera eval output
         projections: (N, proj_dim) tensor or None
         roles: (N, 5) tensor or None
         cameras: list[str] or None
@@ -108,14 +105,15 @@ def _load_eval_data(args):
     return all_results, projections, roles, cameras, lane_keys, dataset
 
 
-# ── Figure E2: Lateral Rank Prediction ──────────────────────────────
+# -- Figure E2: Cross-Camera Lateral Rank Alignment ------------------
 
 
 def figure_e2(all_results: dict, output_dir: Path):
-    """Scatter plot: predicted (encoder) lateral rank vs ground truth (geometric).
+    """Scatter plot: matched lateral rank vs ground truth across cameras.
 
-    Each point is one lane from a held-out camera. Points are colored by camera.
-    Perfect prediction lies on the diagonal.
+    Each point is one lane from a held-out camera matched to its nearest
+    embedding neighbor in the reference set. Points on the diagonal show
+    that cross-camera alignment preserves lateral position.
     """
     fig, ax = plt.subplots(figsize=(6, 6))
 
@@ -174,8 +172,8 @@ def figure_e2(all_results: dict, output_dir: Path):
         )
 
     ax.set_xlabel("Ground Truth Lateral Rank", fontsize=12)
-    ax.set_ylabel("Encoder Predicted Rank", fontsize=12)
-    ax.set_title("E2: Lateral Rank Prediction Accuracy", fontsize=13)
+    ax.set_ylabel("Matched Lateral Rank (cross-camera)", fontsize=12)
+    ax.set_title("Cross-Camera Lateral Rank Alignment", fontsize=13)
     ax.set_xlim(-0.05, 1.05)
     ax.set_ylim(-0.05, 1.05)
     ax.set_aspect("equal")
@@ -183,9 +181,8 @@ def figure_e2(all_results: dict, output_dir: Path):
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
 
-    path = output_dir / "E2_lateral_rank.pdf"
-    fig.savefig(str(path), dpi=300)
-    fig.savefig(str(path.with_suffix(".png")), dpi=150)
+    path = output_dir / "E2_lateral_rank.png"
+    fig.savefig(str(path), dpi=150)
     plt.close(fig)
     logger.info(f"Saved E2 to {path}")
 
@@ -247,7 +244,7 @@ def _figure_e2_from_prediction_jsons(all_results, output_dir, fig, ax):
     return fig, ax
 
 
-# ── Figure E3: Edge Prediction ──────────────────────────────────────
+# -- Figure E3: Edge Prediction --------------------------------------
 
 
 def figure_e3(all_results: dict, output_dir: Path):
@@ -276,8 +273,8 @@ def figure_e3(all_results: dict, output_dir: Path):
         # Source 2: results JSON per_lane data (from evaluate_zero_shot)
         per_lane = all_results.get(cam, {}).get("per_lane", []) if all_results else []
 
-        cam_correct = 0
-        cam_total = 0
+        cam_gt_left, cam_pr_left = [], []
+        cam_gt_right, cam_pr_right = [], []
 
         if pred_path and pred_path.exists():
             with open(pred_path) as f:
@@ -291,8 +288,10 @@ def figure_e3(all_results: dict, output_dir: Path):
                 pred_leftmost.append(int(pr_l))
                 gt_rightmost.append(int(gt_r))
                 pred_rightmost.append(int(pr_r))
-                cam_correct += int(gt_l == pr_l) + int(gt_r == pr_r)
-                cam_total += 2
+                cam_gt_left.append(int(gt_l))
+                cam_pr_left.append(int(pr_l))
+                cam_gt_right.append(int(gt_r))
+                cam_pr_right.append(int(pr_r))
         elif per_lane and "query_is_leftmost" in per_lane[0]:
             for l in per_lane:
                 gt_l = l["query_is_leftmost"]
@@ -303,14 +302,26 @@ def figure_e3(all_results: dict, output_dir: Path):
                 pred_leftmost.append(int(pr_l))
                 gt_rightmost.append(int(gt_r))
                 pred_rightmost.append(int(pr_r))
-                cam_correct += int(gt_l == pr_l) + int(gt_r == pr_r)
-                cam_total += 2
+                cam_gt_left.append(int(gt_l))
+                cam_pr_left.append(int(pr_l))
+                cam_gt_right.append(int(gt_r))
+                cam_pr_right.append(int(pr_r))
         elif cam in all_results:
             per_camera_acc[cam] = all_results[cam].get("edge_flag_accuracy", None)
             continue
 
-        if cam_total > 0:
-            per_camera_acc[cam] = cam_correct / cam_total
+        # Compute macro-averaged F1 across leftmost + rightmost
+        if cam_gt_left:
+            f1s = []
+            for gt_arr, pr_arr in [(cam_gt_left, cam_pr_left), (cam_gt_right, cam_pr_right)]:
+                gt_a, pr_a = np.array(gt_arr), np.array(pr_arr)
+                tp = int(((gt_a == 1) & (pr_a == 1)).sum())
+                fp = int(((gt_a == 0) & (pr_a == 1)).sum())
+                fn = int(((gt_a == 1) & (pr_a == 0)).sum())
+                p = tp / (tp + fp) if (tp + fp) > 0 else 0
+                r = tp / (tp + fn) if (tp + fn) > 0 else 0
+                f1s.append(2 * p * r / (p + r) if (p + r) > 0 else 0)
+            per_camera_acc[cam] = np.mean(f1s)
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
 
@@ -326,30 +337,29 @@ def figure_e3(all_results: dict, output_dir: Path):
         title="Rightmost Flag", labels=["Not Right", "Rightmost"],
     )
 
-    # Subplot 3: Per-camera accuracy bar chart
+    # Subplot 3: Per-camera edge F1 bar chart
     if per_camera_acc:
         cams = sorted(per_camera_acc.keys())
-        accs = [per_camera_acc[c] for c in cams]
-        bars = axes[2].barh(cams, accs, color=plt.cm.tab10.colors[:len(cams)], edgecolor="black")
+        f1s = [per_camera_acc[c] for c in cams]
+        bars = axes[2].barh(cams, f1s, color=plt.cm.tab10.colors[:len(cams)], edgecolor="black")
         axes[2].set_xlim(0, 1.05)
-        axes[2].set_xlabel("Edge Flag Accuracy", fontsize=11)
-        axes[2].set_title("Per-Camera Accuracy", fontsize=12)
-        for bar, acc in zip(bars, accs):
-            if acc is not None:
+        axes[2].set_xlabel("Edge Flag F1 (macro avg)", fontsize=11)
+        axes[2].set_title("Per-Camera Edge F1", fontsize=12)
+        for bar, f1 in zip(bars, f1s):
+            if f1 is not None:
                 axes[2].text(
-                    acc + 0.01, bar.get_y() + bar.get_height() / 2,
-                    f"{acc:.2f}", va="center", fontsize=9,
+                    f1 + 0.01, bar.get_y() + bar.get_height() / 2,
+                    f"{f1:.2f}", va="center", fontsize=9,
                 )
         axes[2].axvline(1.0, color="green", linestyle="--", alpha=0.5)
     else:
         axes[2].text(0.5, 0.5, "No data", ha="center", va="center", transform=axes[2].transAxes)
 
-    fig.suptitle("E3: Edge Prediction (Lane Adjacency)", fontsize=14, y=1.02)
+    fig.suptitle("Edge Prediction (Lane Adjacency)", fontsize=14, y=1.02)
     fig.tight_layout()
 
-    path = output_dir / "E3_edge_prediction.pdf"
-    fig.savefig(str(path), dpi=300, bbox_inches="tight")
-    fig.savefig(str(path.with_suffix(".png")), dpi=150, bbox_inches="tight")
+    path = output_dir / "E3_edge_prediction.png"
+    fig.savefig(str(path), dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info(f"Saved E3 to {path}")
 
@@ -390,15 +400,18 @@ def _plot_confusion(ax, gt, pred, title, labels):
             ax.text(j, i, f"{val}\n({pct:.0f}%)", ha="center", va="center",
                     fontsize=11, fontweight="bold", color=color)
 
-    # Accuracy annotation
-    acc = (tp + tn) / total if total > 0 else 0
+    # Precision / Recall / F1 annotation (for the positive class)
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
     ax.text(
-        0.5, -0.15, f"Accuracy: {acc:.1%}  (n={total})",
+        0.5, -0.15,
+        f"P={precision:.1%}  R={recall:.1%}  F1={f1:.1%}  (n={total})",
         transform=ax.transAxes, ha="center", fontsize=9,
     )
 
 
-# ── Figure E4: Embedding Similarity ─────────────────────────────────
+# -- Figure E4: Cross-Camera Behavioral Alignment --------------------
 
 
 def figure_e4(
@@ -412,7 +425,7 @@ def figure_e4(
     """Box/violin plot: cosine similarity within-group vs across-group vs same-rank-cross-camera.
 
     Three categories:
-    1. Same group: lanes from the same (camera, group_id) — siblings
+    1. Same group: lanes from the same (camera, group_id) -- siblings
     2. Different group, same camera: different groups within same camera
     3. Cross-camera, same lateral rank: matching rank from different cameras
     """
@@ -462,7 +475,7 @@ def figure_e4(
     colors = ["#2ecc71", "#3498db", "#e74c3c", "#95a5a6"]
 
     bp = ax.boxplot(
-        data, labels=labels, patch_artist=True, widths=0.6,
+        data, tick_labels=labels, patch_artist=True, widths=0.6,
         showfliers=True, flierprops=dict(marker=".", markersize=3, alpha=0.3),
     )
     for patch, color in zip(bp["boxes"], colors):
@@ -489,7 +502,7 @@ def figure_e4(
             )
 
     ax.set_ylabel("Cosine Similarity", fontsize=11)
-    ax.set_title("Embedding Similarity by Pair Type", fontsize=12)
+    ax.set_title("Cross-Camera Alignment by Pair Type", fontsize=12)
     ax.grid(True, alpha=0.3, axis="y")
 
     # Subplot 2: Similarity heatmap (sorted by camera then group)
@@ -551,17 +564,16 @@ def figure_e4(
     plt.colorbar(im, ax=ax2, label="Cosine Similarity", shrink=0.8)
     ax2.set_title("Similarity Matrix (by camera/group)", fontsize=12)
 
-    fig.suptitle("E4: Embedding Similarity Structure", fontsize=14, y=1.02)
+    fig.suptitle("Cross-Camera Behavioral Alignment", fontsize=14, y=1.02)
     fig.tight_layout()
 
-    path = output_dir / "E4_embedding_similarity.pdf"
-    fig.savefig(str(path), dpi=300, bbox_inches="tight")
-    fig.savefig(str(path.with_suffix(".png")), dpi=150, bbox_inches="tight")
+    path = output_dir / "E4_embedding_similarity.png"
+    fig.savefig(str(path), dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info(f"Saved E4 to {path}")
 
 
-# ── Figure E4-alt: from results JSON only (no embeddings) ───────────
+# -- Figure E4-alt: from results JSON only (no embeddings) -----------
 
 
 def figure_e4_from_results(all_results: dict, output_dir: Path):
@@ -584,7 +596,7 @@ def figure_e4_from_results(all_results: dict, output_dir: Path):
 
     if data:
         bp = ax.boxplot(
-            data, labels=labels, patch_artist=True, widths=0.6,
+            data, tick_labels=labels, patch_artist=True, widths=0.6,
             showfliers=True,
         )
         colors = [_CAMERA_COLORS[i % len(_CAMERA_COLORS)] for i in range(len(data))]
@@ -593,19 +605,18 @@ def figure_e4_from_results(all_results: dict, output_dir: Path):
             patch.set_alpha(0.7)
 
         ax.set_ylabel("Cosine Similarity to Best Match", fontsize=11)
-        ax.set_title("E4: Match Similarity per Held-Out Camera", fontsize=12)
+        ax.set_title("Match Similarity per Held-Out Camera", fontsize=12)
         ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
         ax.grid(True, alpha=0.3, axis="y")
 
     fig.tight_layout()
-    path = output_dir / "E4_match_similarity.pdf"
-    fig.savefig(str(path), dpi=300, bbox_inches="tight")
-    fig.savefig(str(path.with_suffix(".png")), dpi=150, bbox_inches="tight")
+    path = output_dir / "E4_match_similarity.png"
+    fig.savefig(str(path), dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info(f"Saved E4 (match sim only) to {path}")
 
 
-# ── Main ─────────────────────────────────────────────────────────────
+# -- Main -------------------------------------------------------------
 
 
 def main():
@@ -616,16 +627,16 @@ def main():
     )
     parser.add_argument(
         "--results-json", default=None,
-        help="Path to pre-saved zero_shot_results.json (skip recomputation)",
+        help="Path to pre-saved cross-camera results JSON (skip recomputation)",
     )
     parser.add_argument(
-        "--output-dir", default="results/lane_contrastive/figures",
+        "--output-dir", default="results/joint_encoder/figures",
         help="Output directory for figures",
     )
     parser.add_argument(
-        "--figures", nargs="+", default=["E2", "E3", "E4"],
+        "--figures", nargs="+", default=["E2", "E4"],
         choices=["E2", "E3", "E4"],
-        help="Which figures to generate (default: all)",
+        help="Which figures to generate (default: E2, E4). E3 retained for backward compat.",
     )
     args = parser.parse_args()
 

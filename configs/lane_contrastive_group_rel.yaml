@@ -1,0 +1,56 @@
+# Contrastive Lane Encoder — with group-relative features (ablation)
+# No cross-lane attention. stats_dim=12 (4 traj_stats + 5 role + 3 group-relative)
+
+data:
+  image_width: 1920
+  image_height: 1080
+  annotation_dir: "../dataset/preprocess"
+  camera_locations: "./dataset/camera_location_list.txt"
+  use_sumo_targets: false
+
+assignment:
+  lateral_threshold_px: 60.0
+  lane_change_std_px: 30.0
+  min_tracklet_points: 5
+
+model:
+  polyline_k: 16
+  polyline_encoder: "transformer"
+  polyline_encoder_dim: 64
+  polyline_encoder_layers: 2
+  polyline_encoder_heads: 4
+  dropout: 0.1
+
+  stats_dim: 12                    # 4 traj_stats + 5 role + 3 group-relative
+  embed_dim: 128
+  proj_dim: 64
+  geometry_dropout: 0.5
+
+  # Cross-lane attention disabled — group context via relative features instead
+  use_cross_lane_attention: false
+
+contrastive_training:
+  epochs: 200
+  batch_size: 32
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  optimizer: "adamw"
+  warmup_epochs: 5
+  grad_clip_norm: 1.0
+  temperature: 0.07
+  role_weight: 2.0
+  augment: true
+  role_similarity_threshold: 0.8
+  max_traj_per_lane: 50
+  val_frequency: 5
+  checkpoint_frequency: 10
+  held_out_camera: ["I43_Keefe", "I43_Walnut"]
+
+system:
+  device: "auto"
+  num_workers: 0
+  seed: 42
+
+experiment:
+  experiment_name: "lane_contrastive_group_rel"
+  saving_path: "./results/"
