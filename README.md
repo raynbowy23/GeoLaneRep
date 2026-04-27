@@ -65,8 +65,6 @@ make comparison-table
 - **[`docs/architecture.md`](docs/architecture.md)** — pipeline / system-level overview
 - **[`docs/scripts_overview.md`](docs/scripts_overview.md)** — what each script in `scripts/` does
 - **[`docs/src_overview.md`](docs/src_overview.md)** — what each module in `src/` does
-- **[`docs/problem_method.md`](docs/problem_method.md)** — markdown port of paper §3–§4
-- **[`docs/future_improvements.md`](docs/future_improvements.md)** — open items from the paper's limitations + implementation-level ideas
 
 The chapter-5 GeoLane-Twin experiment pipeline lives under `.twin/` (gitignored); see `.twin/README.md` for its layout. It is not part of the GeoLaneRep paper release.
 
