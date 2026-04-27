@@ -1,21 +1,4 @@
-#!/usr/bin/env python
-"""Visualize contrastive lane embeddings.
-
-Produces visualization PNGs:
-- embedding_space.png  — t-SNE colored by lateral rank
-- matching_grid.png    — top matched (query, ref) lane pairs
-- similarity_heatmap.png — cosine similarity matrix by camera
-
-Modes:
-- --held-out CAM    : single held-out camera visualizations
-- --all-cameras     : leave-one-out loop, one matching grid per camera
-- (neither)         : global embedding space + heatmap only
-
-Usage:
-    python scripts/visualize_contrastive.py --checkpoint best.pt
-    python scripts/visualize_contrastive.py --checkpoint best.pt --held-out I43_Keefe
-    python scripts/visualize_contrastive.py --checkpoint best.pt --all-cameras
-"""
+#!/usr/bin/env python3
 
 import sys
 from pathlib import Path

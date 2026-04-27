@@ -1,19 +1,4 @@
 #!/usr/bin/env python3
-"""Generate Module 3: Behavioral Taxonomy figures.
-
-Figures:
-    M1 — UMAP of all lane embeddings colored by discovered cluster label
-    M2 — Cluster behavioral statistics table (mean speed/density/lat_rank → HCM type)
-    M3 — Cross-camera retrieval: query lane → top-3 similar from other cameras
-
-Usage:
-    python scripts/generate_taxonomy_figures.py \
-        --checkpoint results/lane_contrastive/checkpoints/best.pt
-
-    # Joint checkpoint:
-    python scripts/generate_taxonomy_figures.py \
-        --checkpoint results/joint_encoder/checkpoints/best.pt
-"""
 
 import sys
 from pathlib import Path
@@ -118,9 +103,6 @@ def _cluster_embeddings(embeddings: np.ndarray, method: str = "hdbscan",
     raise ValueError(f"Unknown clustering method: {method}")
 
 
-# ── Figure M1: UMAP colored by cluster ──────────────────────────────
-
-
 def figure_m1(embeddings: np.ndarray, labels: np.ndarray,
               cameras: list, lane_keys: list, output_dir: Path):
     """UMAP scatter of all lane embeddings colored by cluster, markers by camera."""
@@ -185,9 +167,6 @@ def figure_m1(embeddings: np.ndarray, labels: np.ndarray,
     fig.savefig(str(path), dpi=150)
     plt.close(fig)
     logger.info(f"Saved M1 to {path}")
-
-
-# ── Figure M2: Cluster statistics table ─────────────────────────────
 
 
 def figure_m2(labels: np.ndarray, roles: np.ndarray, dataset,
@@ -323,9 +302,6 @@ def _infer_hcm_type(mean_speed: float, mean_density: float,
     if mean_speed > 0.005:
         return "Synchronized"
     return "Congested"
-
-
-# ── Figure M3: Cross-camera retrieval ───────────────────────────────
 
 
 def figure_m3(projections: np.ndarray, cameras: list, lane_keys: list,
@@ -466,9 +442,6 @@ def _draw_lane_on_frame(ax, sample, annot_dir: Path, W: int, H: int,
             bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8),
         )
     ax.axis("off")
-
-
-# ── Main ─────────────────────────────────────────────────────────────
 
 
 def main():

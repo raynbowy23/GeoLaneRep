@@ -1,6 +1,3 @@
-"""Visualization constants and helpers."""
-
-# Vivid, distinct colors (BGR) — matches fedmeta_geolane palette for consistency.
 SLOT_COLORS = [
     (  0,   0, 255),  # vivid red
     (189, 115,   0),  # strong blue

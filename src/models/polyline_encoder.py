@@ -1,5 +1,3 @@
-"""Per-tracklet polyline encoder: local K-point polyline -> embedding."""
-
 import math
 
 import torch

@@ -1,16 +1,3 @@
-"""Temporal lane encoder for time-series anomaly detection.
-
-Wraps a frozen LaneEncoder, encodes each time window independently,
-then feeds the sequence of embeddings through a GRU to capture temporal
-dynamics. An anomaly head predicts per-window anomaly scores.
-
-Architecture:
-    For each window w:
-        e_w = frozen_lane_encoder._encode_per_lane(geometry, traj_w, mask_w, stats_w)
-    [e_0, ..., e_{W-1}] -> GRU -> h_seq (B, W, embed_dim)
-    h_seq -> anomaly_head -> anomaly_scores (B, W)
-"""
-
 import torch
 import torch.nn as nn
 

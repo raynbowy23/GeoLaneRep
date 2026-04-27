@@ -1,19 +1,3 @@
-"""Extract lane centerline geometries from OpenLaneV2 for diffusion pretraining.
-
-Reads the OpenLaneV2 pickle dataset, projects 3D centerlines to 2D pixel
-coordinates using camera intrinsics/extrinsics, normalizes to [0,1], and
-resamples to K=16 points for compatibility with geolane_encoder format.
-
-Usage:
-    from src.generation.openlane_preprocess import extract_openlane_geometries
-    geometries = extract_openlane_geometries(
-        "/path/to/OpenLane-V2",
-        split="train",
-        max_lanes=10000,
-    )
-    # geometries.shape == (N, 16, 2)
-"""
-
 import logging
 import pickle
 from pathlib import Path
@@ -131,12 +115,20 @@ class OpenLaneV2Extractor:
         self,
         split: str = "train",
         max_lanes: Optional[int] = None,
+        scene_radius: float = 60.0,
+        max_curvature_var: float = 0.001,
     ) -> np.ndarray:
-        """Extract normalized, resampled lane geometries.
+        """Extract BEV lane geometries using ego-frame XY coordinates directly.
+
+        Uses centerline[:, :2] (top-down XY) instead of projecting through
+        camera intrinsics/extrinsics. This matches the geometry distribution
+        of overhead intersection cameras far better than perspective projection.
 
         Args:
             split: Dataset split ("train", "val", "test").
             max_lanes: Cap on number of lanes to extract (None = all).
+            scene_radius: Normalization radius in meters (lanes within
+                ±scene_radius of ego are mapped to [0, 1]).
 
         Returns:
             (N, K, 2) array of normalized [0,1] lane geometries.
@@ -145,14 +137,6 @@ class OpenLaneV2Extractor:
         geometries = []
 
         for entry_key, entry in data.items():
-            if self.camera not in entry.get("sensor", {}):
-                continue
-
-            cam = entry["sensor"][self.camera]
-            K = np.array(cam["intrinsic"]["K"], dtype=np.float64)
-            R = np.array(cam["extrinsic"]["rotation"], dtype=np.float64)
-            T = np.array(cam["extrinsic"]["translation"], dtype=np.float64)
-
             lane_segments = entry.get("annotation", {}).get("lane_segment", [])
 
             for seg in lane_segments:
@@ -160,35 +144,37 @@ class OpenLaneV2Extractor:
                 if len(centerline) < 2:
                     continue
 
-                pts_pixel = _project_to_pixel(centerline, K, R, T)
-                if pts_pixel is None:
-                    continue
+                # Use BEV XY directly — drop Z (ground plane)
+                pts_bev = centerline[:, :2]
 
-                # Filter to within image bounds
+                # Normalize to [0, 1] using fixed scene radius
+                pts_norm = pts_bev / (2 * scene_radius) + 0.5
+
+                # Keep lanes mostly within bounds
                 in_bounds = (
-                    (pts_pixel[:, 0] >= 0)
-                    & (pts_pixel[:, 0] <= self.image_w)
-                    & (pts_pixel[:, 1] >= 0)
-                    & (pts_pixel[:, 1] <= self.image_h)
+                    (pts_norm[:, 0] >= -0.1) & (pts_norm[:, 0] <= 1.1)
+                    & (pts_norm[:, 1] >= -0.1) & (pts_norm[:, 1] <= 1.1)
                 )
                 if in_bounds.sum() < 2:
                     continue
 
-                pts_visible = pts_pixel[in_bounds]
-
-                # Normalize to [0, 1]
-                pts_norm = pts_visible.copy()
-                pts_norm[:, 0] /= self.image_w
-                pts_norm[:, 1] /= self.image_h
+                pts_valid = pts_norm[in_bounds]
 
                 # Resample to K points
-                resampled = _resample_polyline(pts_norm, self.polyline_k)
+                resampled = _resample_polyline(pts_valid, self.polyline_k)
+                resampled = np.clip(resampled, 0.0, 1.0)
 
-                # Validate range
-                if resampled.min() < -0.1 or resampled.max() > 1.1:
+                # Filter out curved/winding lanes (intersections, ramps, connectors)
+                diffs = np.diff(resampled, axis=0)
+                angles = np.arctan2(diffs[:, 1], diffs[:, 0])
+                angle_changes = np.abs(np.diff(angles))
+                # Wrap to [-pi, pi]
+                angle_changes = np.where(
+                    angle_changes > np.pi, 2 * np.pi - angle_changes, angle_changes
+                )
+                if np.var(angle_changes) > max_curvature_var:
                     continue
 
-                resampled = np.clip(resampled, 0.0, 1.0)
                 geometries.append(resampled)
 
                 if max_lanes and len(geometries) >= max_lanes:
@@ -199,8 +185,7 @@ class OpenLaneV2Extractor:
 
         result = np.array(geometries, dtype=np.float32)
         logger.info(
-            f"Extracted {len(result)} lane geometries from OpenLaneV2 "
-            f"({split}, camera={self.camera})"
+            f"Extracted {len(result)} BEV lane geometries from OpenLaneV2 ({split})"
         )
         return result
 

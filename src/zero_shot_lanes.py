@@ -1,17 +1,3 @@
-"""Zero-shot lane property prediction from contrastive encoder.
-
-Given a camera with annotation geometry and trajectory data, builds
-pseudo-lanes from annotation waypoints (for lane boundaries) and predicts
-lane properties via the trained encoder's regression heads.
-
-Pipeline:
-    annotation.json + trajectory.csv
-        → annotation-based lane building (trajectory assignment)
-        → encode trajectory-only (geometry=zeros)
-        → regression heads → predicted lateral_rank, edge flags, lane_count
-        → cosine match to reference bank (diagnostic only)
-"""
-
 import logging
 from collections import defaultdict
 from dataclasses import dataclass

@@ -1,16 +1,3 @@
-"""Cross-camera lane alignment evaluation for contrastive lane embeddings.
-
-Given a trained LaneEncoder:
-1. Encode all training-camera lanes (full-info: geometry + traj + roles) -> reference bank
-2. On held-out camera: encode lanes (full-info) -> query set
-3. Match via cosine similarity
-4. Evaluate cross-camera alignment quality
-
-All inputs (geometry from annotation, roles from OSM, trajectories from tracking)
-are freely available at deployment — this tests cross-camera generalization,
-not zero-shot inference.
-"""
-
 import logging
 from collections import defaultdict
 from pathlib import Path
@@ -76,6 +63,7 @@ def encode_lanes(
     loader: DataLoader,
     device: torch.device,
     drop_geometry: bool = False,
+    drop_trajectory: bool = False,
     drop_roles: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, List[str]]:
     """Encode all lanes in a dataloader.
@@ -85,6 +73,7 @@ def encode_lanes(
         loader: DataLoader yielding batches.
         device: torch device.
         drop_geometry: If True, zero out geometry (trajectory-only encoding).
+        drop_trajectory: If True, zero out trajectory (geometry-only encoding).
         drop_roles: If True, zero out the role portion of stats_input.
 
     Returns:
@@ -111,6 +100,7 @@ def encode_lanes(
                 traj_stats=stats_input,
                 group_ids=batch["group_ids"].to(device),
                 drop_geometry=drop_geometry,
+                drop_trajectory=drop_trajectory,
             )
         else:
             output = model(
@@ -119,6 +109,7 @@ def encode_lanes(
                 traj_mask=batch["traj_mask"].to(device),
                 traj_stats=stats_input,
                 drop_geometry=drop_geometry,
+                drop_trajectory=drop_trajectory,
             )
         all_proj.append(output["projection"].cpu())
         all_roles.append(batch["roles"])

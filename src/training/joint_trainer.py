@@ -1,14 +1,3 @@
-"""Joint training loop for contrastive + temporal lane encoder.
-
-Trains both objectives simultaneously through a single trainable encoder:
-  - Contrastive (InfoNCE + role regression): shapes encoder to produce
-    structurally meaningful lane embeddings.
-  - Temporal (BCE on synthetic anomalies): shapes encoder + GRU to detect
-    per-window behavioral changes.
-
-Total loss = alpha * temporal_loss + beta * contrastive_loss
-"""
-
 import json
 import logging
 import time

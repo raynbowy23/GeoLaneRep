@@ -1,5 +1,3 @@
-"""Load hand-drawn annotation JSON files and convert to normalized [0,1] lane geometries."""
-
 import json
 import logging
 import math

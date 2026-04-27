@@ -1,15 +1,3 @@
-"""Conditional diffusion model for lane geometry generation.
-
-DDPM with FiLM conditioning on behavioral embeddings. Generates (K, 2)
-lane geometries conditioned on a target behavioral embedding.
-
-Architecture:
-    x_t (K*2=32) + t_emb (64) → FiLM-conditioned MLP → predicted noise ε
-
-The model is small by design: lane geometries are low-dimensional (32 values),
-so 100 diffusion steps and a 3-layer MLP are sufficient.
-"""
-
 import logging
 import math
 from typing import Optional, Tuple
@@ -18,11 +6,6 @@ import torch
 import torch.nn as nn
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# FiLM layer
-# ---------------------------------------------------------------------------
 
 class FiLMLayer(nn.Module):
     """Feature-wise Linear Modulation layer.
@@ -45,7 +28,6 @@ class FiLMLayer(nn.Module):
         beta = self.film_shift(cond)
         return self.act(h * (1 + gamma) + beta)
 
-
 # ---------------------------------------------------------------------------
 # Sinusoidal timestep embedding
 # ---------------------------------------------------------------------------
@@ -66,7 +48,6 @@ def sinusoidal_embedding(t: torch.Tensor, dim: int) -> torch.Tensor:
     )
     args = t.float().unsqueeze(1) * freqs.unsqueeze(0)
     return torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-
 
 # ---------------------------------------------------------------------------
 # Denoising network
@@ -123,7 +104,6 @@ class LaneDenoiser(nn.Module):
         h = self.layer3(h, cond)
         return self.out(h)
 
-
 # ---------------------------------------------------------------------------
 # DDPM schedules and sampling
 # ---------------------------------------------------------------------------
@@ -166,7 +146,6 @@ class DDPMSchedule:
         sqrt_omab = self.sqrt_one_minus_alpha_bar[t].unsqueeze(-1)
         x_t = sqrt_ab * x_0 + sqrt_omab * noise
         return x_t, noise
-
 
 # ---------------------------------------------------------------------------
 # Diffusion trainer

@@ -1,10 +1,3 @@
-"""Training loop for temporal lane encoder with synthetic anomaly injection.
-
-Trains the GRU + anomaly head on top of a frozen LaneEncoder. Anomalies are
-synthetically injected at training time: speed drops, count drops, and lateral
-shifts. The model learns to detect these temporal changes via BCE loss.
-"""
-
 import json
 import logging
 import time
@@ -26,11 +19,6 @@ from src.models.lane_encoder import LaneEncoder
 from src.models.temporal_encoder import LaneTemporalEncoder
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Synthetic anomaly injection
-# ---------------------------------------------------------------------------
 
 def inject_anomalies(
     window_traj_polylines: torch.Tensor,
@@ -129,7 +117,6 @@ def inject_anomalies(
                     stats[b, w, 2] += abs(offset[0].item()) + abs(offset[1].item())
 
     return poly, mask, stats, labels
-
 
 # ---------------------------------------------------------------------------
 # Trainer

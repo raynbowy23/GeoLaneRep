@@ -1,9 +1,3 @@
-"""Embedding-based lane geometry retrieval and warm-start interpolation.
-
-Given a behavioral embedding e_target, retrieve the k nearest lanes by
-cosine similarity and produce a warm-start geometry via weighted interpolation.
-"""
-
 import logging
 from dataclasses import dataclass
 from typing import List, Optional, Tuple

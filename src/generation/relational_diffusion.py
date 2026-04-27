@@ -1,22 +1,3 @@
-"""Relational conditioning diffusion model for lane geometry generation.
-
-Extends the baseline FiLM-conditioned DDPM with relational context:
-  - neighbor_geom: geometry of the lane being merged into / diverged from
-  - merge_point: where along the lane the topology change occurs [0,1]
-  - offset: starting lateral distance from the neighbor
-
-Architecture:
-    x_t (32) + t_emb (64) → concat (96)
-    cond (128) + rel_emb (64) → cond_aug (192)
-    3× FiLM layers conditioned on cond_aug → predicted noise ε
-
-The relational encoder is a small MLP that encodes
-(neighbor_geom, merge_point, offset, has_relation) → 64-dim vector,
-concatenated with the behavioral embedding for FiLM conditioning.
-
-Coexists with LaneDenoiser for A/B comparison.
-"""
-
 import logging
 from typing import Optional
 
@@ -30,11 +11,6 @@ from src.generation.diffusion import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Relational encoder
-# ---------------------------------------------------------------------------
 
 class RelationalEncoder(nn.Module):
     """Encode relational context into a fixed-size vector.
@@ -86,7 +62,6 @@ class RelationalEncoder(nn.Module):
         """
         x = torch.cat([neighbor_geom, merge_point, offset, has_relation], dim=-1)
         return self.net(x)
-
 
 # ---------------------------------------------------------------------------
 # Relational denoiser
@@ -169,7 +144,6 @@ class RelationalLaneDenoiser(nn.Module):
         h = self.layer2(h, cond_aug)
         h = self.layer3(h, cond_aug)
         return self.out(h)
-
 
 # ---------------------------------------------------------------------------
 # Relational diffusion trainer

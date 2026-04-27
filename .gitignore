@@ -5,8 +5,11 @@ uv.lock
 __pycache__/
 *.pyc
 
-docs/
+docs/env/
 dataset/
 results/
-shared/
 yolo11n.pt
+
+# GeoLane-Twin experiment pipeline — stashed under .twin/, not part of the
+# GeoLaneRep paper release. See .twin/Makefile for the targets.
+.twin/

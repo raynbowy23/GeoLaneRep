@@ -1,27 +1,3 @@
-"""Directed lane geometry generator (Pipeline B).
-
-Given a user specification (e.g., "rightmost lane in US12_Park group 0"),
-generates novel lane geometry that fits the target road section.
-
-The diffusion model operates in canonical space (centered, aligned, unit-length).
-Generated shapes are denormalized back to image space using the target group's
-heading, scale, and centroid position.
-
-Pipeline (baseline):
-    spec → resolve to target embedding + spatial context
-         → build warm-start from anchor lane (in anchor's canonical space)
-         → diffuse conditioned on target embedding (in canonical space)
-         → denormalize to image space using anchor's pose
-         → post-process and score candidates
-
-Pipeline (relational):
-    spec → resolve to target embedding + spatial context
-         → build warm-start from anchor lane (in NEIGHBOR's canonical space)
-         → diffuse conditioned on embedding + relational context
-         → denormalize to image space using NEIGHBOR's pose
-         → generated lane appears at learned offset from neighbor
-"""
-
 import logging
 from dataclasses import dataclass
 from typing import Optional
@@ -91,7 +67,7 @@ class DirectedLaneGenerator:
         self,
         spec: LaneSpecification,
         n_candidates: int = 5,
-        warm_start_t: int = 50,
+        warm_start_t: int = 25,
     ) -> GenerationResult:
         """Generate lane candidates matching a specification (baseline model).
 
@@ -156,6 +132,244 @@ class DirectedLaneGenerator:
             candidates, target_embedding, spatial_context, spec=spec,
         )
 
+        best_idx = np.argmax(scores)
+
+        return GenerationResult(
+            candidates=candidates,
+            scores=scores,
+            best=candidates[best_idx],
+            target_embedding=target_embedding,
+            spatial_context=spatial_context,
+            spec=spec,
+        )
+
+    def generate_with_trajectory_anchor(
+        self,
+        trajectory_anchor: np.ndarray,
+        spec: "LaneSpecification",
+        n_candidates: int = 5,
+        warm_start_t: int = 25,
+    ) -> GenerationResult:
+        """Hybrid generation: trajectory-grounded placement + diffusion shape.
+
+        WHERE comes from ``trajectory_anchor`` — a centerline derived from
+        vehicle trajectories that already represents the correct position of
+        the new lane in image space.  WHAT it looks like comes from the
+        diffusion model conditioned on the spec embedding.
+
+        The annotation-based lateral offset in ``_apply_lateral_offset`` is
+        intentionally skipped here — the trajectory anchor is the target
+        position, not the adjacent lane's anchor.
+
+        Args:
+            trajectory_anchor: (K, 2) image-space centerline of the desired
+                new lane, derived from ``trajectory_gen.generate()``.
+            spec: Lane specification used to condition the diffusion model.
+            n_candidates: Number of diverse candidates to generate.
+            warm_start_t: Diffusion warm-start timestep (0=clean, T=full noise).
+
+        Returns:
+            GenerationResult with scored candidates in image space.
+        """
+        # 1. Resample trajectory anchor to model's K to ensure shape compatibility.
+        #    trajectory_anchor may have more waypoints (e.g. K=32) than the
+        #    diffusion model expects (index.K, typically 16).
+        from src.generation.trajectory_gen import _resample as _traj_resample
+        model_K = self.resolver.index.K
+        if trajectory_anchor.shape[0] != model_K:
+            trajectory_anchor = _traj_resample(trajectory_anchor, model_K)
+
+        # 2. Extract placement parameters from the (resampled) trajectory anchor.
+        #    The canonical transform gives us centroid, angle, scale that
+        #    will be used to put the generated shape back in image space.
+        canonical_anchor, t_centroid, t_angle, t_scale = to_canonical(trajectory_anchor)
+        canonical_anchor = canonical_anchor.astype(np.float32)
+
+        # 3. Resolve spec → conditioning embedding
+        #    Falls back gracefully if no annotation is available.
+        try:
+            target_embedding, spatial_context = self.resolver.resolve(spec)
+        except Exception as e:
+            logger.warning(f"Spec resolution failed ({e}), using mean embedding")
+            target_embedding = self.resolver.index.embeddings.mean(axis=0)
+            spatial_context = None
+
+        # 4. Warm-start diffusion from the trajectory anchor in canonical space
+        cond = torch.tensor(target_embedding, dtype=torch.float32)
+        ws = torch.tensor(canonical_anchor.flatten(), dtype=torch.float32)
+        sample_kwargs = dict(
+            n_samples=n_candidates,
+            warm_start=ws,
+            warm_start_t=warm_start_t,
+        )
+
+        # 5. Run diffusion in canonical space
+        generated = self.trainer.sample(cond, **sample_kwargs)
+
+        K = model_K
+        canonical_candidates = generated.cpu().numpy().reshape(n_candidates, K, 2)
+
+        # 5. Denormalize using trajectory-derived pose
+        #    This places the generated shape at the trajectory-grounded location.
+        candidates = np.zeros_like(canonical_candidates)
+        for i in range(n_candidates):
+            candidates[i] = from_canonical(
+                canonical_candidates[i],
+                t_centroid, t_angle, t_scale,
+            )
+
+        # NOTE: _apply_lateral_offset is intentionally NOT called here.
+        # The trajectory_anchor already encodes the correct lateral position.
+
+        # 6. Post-process
+        candidates = self._post_process(candidates)
+
+        # 7. Score by proximity to trajectory anchor (scene-grounded).
+        #    Candidates closest to the trajectory anchor stay at the correct
+        #    spatial location while still benefiting from diffusion shaping.
+        #    Combine with smoothness so degenerate outputs are filtered out.
+        prox_scores = self._score_trajectory_proximity(candidates, trajectory_anchor)
+        smooth_scores = np.array([
+            1.0 / (1.0 + np.var(np.abs(np.diff(
+                np.arctan2(np.diff(c[:, 1]), np.diff(c[:, 0]))
+            )))) for c in candidates
+        ])
+        scores = 0.7 * prox_scores + 0.3 * smooth_scores
+        best_idx = np.argmax(scores)
+
+        return GenerationResult(
+            candidates=candidates,
+            scores=scores,
+            best=candidates[best_idx],
+            target_embedding=target_embedding,
+            spatial_context=spatial_context,
+            spec=spec,
+        )
+
+    def generate_with_trajectory_context(
+        self,
+        trajectory_anchor: np.ndarray,
+        neighbor_centerline: np.ndarray,
+        spec: "LaneSpecification",
+        n_candidates: int = 5,
+        warm_start_t: int = 25,
+    ) -> GenerationResult:
+        """Hybrid generation using relational diffusion conditioned on trajectory neighbors.
+
+        This is the scene-aware version of hybrid generation:
+          - neighbor_centerline: real adjacent trajectory lane (the scene context)
+          - The relational diffusion model sees this neighbor geometry and generates
+            a lane that fits next to it — both shape AND relative position come from
+            real scene evidence, not heuristic offsets.
+
+        The pipeline mirrors generate_relational() but uses trajectory-derived
+        geometry instead of annotation-based geometry:
+          1. Express trajectory_anchor in neighbor's canonical frame → warm-start
+          2. Pass neighbor's canonical shape as relational context to denoiser
+          3. Compute lateral offset from neighbor to anchor (scene-specific)
+          4. Denormalize using neighbor's canonical pose → image space
+
+        Falls back to generate_with_trajectory_anchor() if no relational trainer.
+
+        Args:
+            trajectory_anchor: (K, 2) image-space centerline of WHERE the new lane goes,
+                derived from trajectory_gen.generate().
+            neighbor_centerline: (K, 2) image-space centerline of the ADJACENT existing
+                trajectory lane (the context the diffusion model conditions on).
+            spec: Lane specification for the spec embedding.
+            n_candidates: Number of diffusion candidates.
+            warm_start_t: Warm-start timestep.
+
+        Returns:
+            GenerationResult with scene-aware candidates in image space.
+        """
+        if self.relational_trainer is None:
+            logger.info("No relational trainer, falling back to trajectory anchor generation")
+            return self.generate_with_trajectory_anchor(
+                trajectory_anchor, spec, n_candidates, warm_start_t,
+            )
+
+        from src.generation.trajectory_gen import _resample as _traj_resample
+
+        # 1. Resample both centerlines to model's K
+        model_K = self.resolver.index.K
+        if trajectory_anchor.shape[0] != model_K:
+            trajectory_anchor = _traj_resample(trajectory_anchor, model_K)
+        if neighbor_centerline.shape[0] != model_K:
+            neighbor_centerline = _traj_resample(neighbor_centerline, model_K)
+
+        # 2. Get neighbor's canonical pose — used for denormalization
+        neighbor_canonical, nb_centroid, nb_angle, nb_scale = to_canonical(neighbor_centerline)
+
+        # 3. Express trajectory_anchor in neighbor's canonical frame → warm-start
+        #    (same transform as generate_relational uses for anchor_in_neighbor_frame)
+        anchor_centered = trajectory_anchor - nb_centroid
+        c, s = np.cos(-nb_angle), np.sin(-nb_angle)
+        R = np.array([[c, -s], [s, c]])
+        anchor_in_nb_frame = (anchor_centered @ R.T) / (nb_scale + 1e-8)
+        canonical_warm_start = anchor_in_nb_frame.astype(np.float32)
+
+        # 4. Compute lateral offset from neighbor to anchor in canonical space
+        #    This tells the model how far the new lane is from the neighbor.
+        offset_val = float(np.mean(canonical_warm_start[:, 1]))  # mean y in canonical
+
+        # 5. Resolve spec → conditioning embedding
+        try:
+            target_embedding, spatial_context = self.resolver.resolve(spec)
+        except Exception as e:
+            logger.warning(f"Spec resolution failed ({e}), using mean embedding")
+            target_embedding = self.resolver.index.embeddings.mean(axis=0)
+            spatial_context = None
+
+        # 6. Prepare tensors for relational diffusion
+        cond = torch.tensor(target_embedding, dtype=torch.float32)
+        nb_geom = torch.tensor(neighbor_canonical.flatten(), dtype=torch.float32)
+        merge_pt = torch.tensor(
+            [0.5 if spec.has_successor else 1.0], dtype=torch.float32,
+        )
+        offset_t = torch.tensor([offset_val], dtype=torch.float32)
+        has_rel = torch.tensor([1.0], dtype=torch.float32)
+
+        ws = torch.tensor(canonical_warm_start.flatten(), dtype=torch.float32)
+
+        # 7. Run relational diffusion — model sees real trajectory neighbor geometry
+        generated = self.relational_trainer.sample(
+            cond, nb_geom, merge_pt, offset_t, has_rel,
+            n_samples=n_candidates,
+            warm_start=ws,
+            warm_start_t=warm_start_t,
+        )
+
+        K = model_K
+        canonical_candidates = generated.cpu().numpy().reshape(n_candidates, K, 2)
+
+        # 8. Denormalize from neighbor's canonical frame → image space
+        candidates = np.zeros_like(canonical_candidates)
+        for i in range(n_candidates):
+            candidates[i] = from_canonical(
+                canonical_candidates[i], nb_centroid, nb_angle, nb_scale,
+            )
+
+        # 9. Post-process
+        candidates = self._post_process(candidates)
+
+        # 10. Blend each candidate toward the trajectory anchor.
+        #     Diffusion noise at warm_start_t introduces curvature that doesn't
+        #     belong on a highway — blending suppresses this while keeping the
+        #     learned shape contribution.  alpha=0.6 means 60% trajectory shape.
+        from src.generation.trajectory_gen import _resample as _traj_resample
+        anchor_resampled = _traj_resample(trajectory_anchor, model_K)
+        alpha = 0.6  # weight toward trajectory anchor
+        candidates = alpha * anchor_resampled[None] + (1 - alpha) * candidates
+
+        # 11. Score by proximity to trajectory anchor
+        prox_scores = self._score_trajectory_proximity(candidates, trajectory_anchor)
+        smooth_scores = np.array([
+            1.0 / (1.0 + np.var(np.abs(np.diff(
+                np.arctan2(np.diff(c[:, 1]), np.diff(c[:, 0]))
+            )))) for c in candidates
+        ])
+        scores = 0.7 * prox_scores + 0.3 * smooth_scores
         best_idx = np.argmax(scores)
 
         return GenerationResult(
@@ -236,7 +450,7 @@ class DirectedLaneGenerator:
         self,
         spec: LaneSpecification,
         n_candidates: int = 5,
-        warm_start_t: int = 50,
+        warm_start_t: int = 25,
     ) -> GenerationResult:
         """Generate lane candidates with relational context (merge/diverge).
 
@@ -417,17 +631,17 @@ class DirectedLaneGenerator:
             return candidates
 
         if spec.is_rightmost:
-            offset = perp * spacing
+            offset = perp * spacing * 1.5
             candidates = candidates + offset[None, None, :]
         elif spec.is_leftmost:
-            offset = -perp * spacing
+            offset = -perp * spacing * 1.5
             candidates = candidates + offset[None, None, :]
         elif spec.has_successor:
             # Merge lane: taper from full offset at start to zero at end
             # so the generated lane converges toward the group
             K = candidates.shape[1]
             taper = np.linspace(1.0, 0.0, K)[:, None]  # (K, 1)
-            offset = perp * spacing * taper  # (K, 2)
+            offset = perp * spacing * 1.5 * taper  # (K, 2)
             candidates = candidates + offset[None, :, :]
 
         return candidates
@@ -464,6 +678,7 @@ class DirectedLaneGenerator:
         candidates = np.clip(candidates, 0.0, 1.0)
 
         # Multi-pass smoothing (moving average with window=3)
+        n_smooth_passes = 4
         for _ in range(n_smooth_passes):
             for i in range(len(candidates)):
                 geom = candidates[i]
@@ -519,20 +734,20 @@ class DirectedLaneGenerator:
             angle_changes = np.abs(np.diff(angles))
             curvature_score = 1.0 / (1.0 + np.var(angle_changes))
 
-            # Self-intersection penalty: check if any segments cross
+            # Self-intersection penalty: discard looping candidates entirely
             intersection_penalty = 1.0
             K = len(geom)
             for a in range(K - 1):
                 for b in range(a + 2, K - 1):
                     if _segments_intersect(geom[a], geom[a+1], geom[b], geom[b+1]):
-                        intersection_penalty = 0.3
+                        intersection_penalty = 0.0
                         break
-                if intersection_penalty < 1.0:
+                if intersection_penalty == 0.0:
                     break
 
             smooth_scores[i] = curvature_score * intersection_penalty
 
-        # --- 2. Spec-aware quality score (0.8 weight) ---
+        # --- 2. Spec-aware quality score (0.6 weight) ---
         spec_scores = np.ones(n) * 0.5  # neutral default
 
         if spatial_context is not None and spec is not None:
@@ -556,7 +771,7 @@ class DirectedLaneGenerator:
                 candidates, spatial_context,
             )
 
-        scores = 0.2 * smooth_scores + 0.8 * spec_scores
+        scores = 0.4 * smooth_scores + 0.6 * spec_scores
         return scores
 
     @staticmethod
@@ -641,5 +856,39 @@ class DirectedLaneGenerator:
             np.mean(np.linalg.norm(c - mean_shape, axis=1))
             for c in candidates
         ])
+        max_dist = dists.max() + 1e-8
+        return 1.0 - dists / max_dist
+
+    @staticmethod
+    def _score_trajectory_proximity(
+        candidates: np.ndarray,
+        trajectory_anchor: np.ndarray,
+    ) -> np.ndarray:
+        """Score candidates by mean Chamfer distance to the trajectory anchor.
+
+        Used in hybrid generation to prefer candidates that stay close to the
+        trajectory-grounded position while still having diffusion-shaped curves.
+        Lower distance → higher score.
+
+        Args:
+            candidates: (n, K, 2) generated geometries in image space.
+            trajectory_anchor: (K', 2) trajectory-derived centerline.
+
+        Returns:
+            (n,) scores in [0, 1], higher = closer to anchor.
+        """
+        n = len(candidates)
+        dists = np.zeros(n)
+        for i, cand in enumerate(candidates):
+            # Mean of per-point nearest-neighbor distance (symmetric Chamfer)
+            d_c2a = np.mean([
+                np.min(np.linalg.norm(trajectory_anchor - pt, axis=1))
+                for pt in cand
+            ])
+            d_a2c = np.mean([
+                np.min(np.linalg.norm(cand - pt, axis=1))
+                for pt in trajectory_anchor
+            ])
+            dists[i] = (d_c2a + d_a2c) / 2.0
         max_dist = dists.max() + 1e-8
         return 1.0 - dists / max_dist

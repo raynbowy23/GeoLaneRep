@@ -1,10 +1,3 @@
-"""Contrastive training for lane representation learning.
-
-InfoNCE loss with structural positive mining. Positives are lanes with
-similar structural roles across different cameras. Negatives are all other
-lanes in the batch (including same-camera lanes with different roles).
-"""
-
 import json
 import logging
 import time
@@ -25,11 +18,6 @@ from src.data.lane_dataset import GroupBatchSampler, LaneDataset, collate_fn
 from src.models.lane_encoder import LaneEncoder
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Loss
-# ---------------------------------------------------------------------------
 
 class ContrastiveLaneLoss(nn.Module):
     """InfoNCE contrastive loss with structural positive pair mining + role regression.
@@ -221,7 +209,6 @@ class ContrastiveLaneLoss(nn.Module):
             "mean_neg_sim": neg_sims_val,
         }
         return loss, metrics
-
 
 # ---------------------------------------------------------------------------
 # Trainer

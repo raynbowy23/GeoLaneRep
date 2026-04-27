@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""Run geometric lane assignment for one or all cameras.
-
-Usage:
-    python scripts/run_assignment.py --config configs/lanelet_core.yaml
-    python scripts/run_assignment.py --config configs/lanelet_core.yaml --camera US12_Greenway
-"""
 
 import argparse
 import logging
@@ -15,7 +9,6 @@ import numpy as np
 import polars as pl
 import yaml
 
-# Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.lane_assignment import LaneAssigner
@@ -118,7 +111,7 @@ def main():
     parser = argparse.ArgumentParser(description="Geometric lane assignment")
     parser.add_argument("--config", required=True, help="Config YAML path")
     parser.add_argument("--camera", default=None, help="Single camera name (default: all)")
-    parser.add_argument("--output", default=None, help="Output directory (default: results/lane_assignment/)")
+    parser.add_argument("--output", default=None, help="Output directory (default: results/preprocessing/lane_assignment/)")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -130,7 +123,7 @@ def main():
 
     output_dir = Path(args.output) if args.output else Path(
         cfg.get("experiment", {}).get("saving_path", "./results/")
-    ) / "lane_assignment"
+    ) / "preprocessing" / "lane_assignment"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     annot_dir = cfg["data"].get("annotation_dir", "../dataset/preprocess")

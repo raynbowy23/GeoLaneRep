@@ -1,36 +1,8 @@
-"""Lane encoder for contrastive representation learning.
-
-Fuses annotation geometry, trajectory behavior, and aggregate statistics
-into a single lane embedding, then projects to a contrastive space.
-
-Architecture:
-    annotation waypoints  ->  PolylineEncoder  --+
-                                                  +-> fusion MLP -> embedding -> projection head
-    assigned trajectories ->  PolylineEncoder  --+
-                                                  |
-    traj_stats            ->  stats MLP        --+
-
-Optional cross-lane attention (gated by use_cross_lane_attention):
-    Per-lane embeddings packed by group_id
-        -> MultiheadSelfAttention with pairwise relative feature bias
-        -> Unpacked back to flat batch
-
-Roles (lateral_rank, edge flags, group_size) are concatenated with traj_stats
-as encoder input (stats_dim=9 = 4 traj_stats + 5 role descriptor). They are
-also used in the contrastive loss (positive pair mining) and as regression
-targets (auxiliary supervision).
-"""
-
 import torch
 import torch.nn as nn
 
 from src.models.cross_lane_attention import CrossLaneAttention
 from src.models.polyline_encoder import PolylineEncoder
-
-
-# ---------------------------------------------------------------------------
-# Group packing helpers (module-level for reuse)
-# ---------------------------------------------------------------------------
 
 def _pack_groups(
     embeddings: torch.Tensor,
@@ -78,7 +50,6 @@ def _pack_groups(
 
     return grouped_emb, grouped_stats, group_mask, unique_gids, lane_indices_per_group
 
-
 def _unpack_groups(
     grouped_emb: torch.Tensor,
     lane_indices_per_group: list,
@@ -103,7 +74,6 @@ def _unpack_groups(
             output[batch_idx] = grouped_emb[g, pos]
 
     return output
-
 
 def _compute_relative_features(
     grouped_stats: torch.Tensor,
@@ -141,7 +111,6 @@ def _compute_relative_features(
 
     rel_features = torch.stack([lateral_diff, speed_diff, density_ratio], dim=-1)
     return rel_features  # (G, L, L, 3)
-
 
 class LaneEncoder(nn.Module):
     """Encode a lane (geometry + trajectories + stats) into a contrastive embedding.
@@ -300,11 +269,16 @@ class LaneEncoder(nn.Module):
         traj_mask: torch.Tensor,
         traj_stats: torch.Tensor,
         drop_geometry: bool = None,
+        drop_trajectory: bool = False,
     ) -> torch.Tensor:
         """Per-lane encoding: geometry + trajectory + stats -> embedding.
 
         Extracts the shared encoding logic used by both forward() and
         forward_grouped(). Returns the fused embedding before projection/heads.
+
+        Args:
+            drop_geometry: If True, zero out geometry embedding (trajectory-only).
+            drop_trajectory: If True, zero out trajectory embedding (geometry-only).
 
         Returns:
             (B, embed_dim) lane embedding.
@@ -324,6 +298,10 @@ class LaneEncoder(nn.Module):
 
         # Trajectory encoding
         traj_emb = self.encode_trajectories(traj_polylines, traj_mask)
+
+        # Trajectory dropout (geometry-only ablation)
+        if drop_trajectory is True:
+            traj_emb = torch.zeros_like(traj_emb)
 
         # Stats encoding
         stats_emb = self.stats_enc(traj_stats)
@@ -380,6 +358,7 @@ class LaneEncoder(nn.Module):
         traj_mask: torch.Tensor,
         traj_stats: torch.Tensor,
         drop_geometry: bool = None,
+        drop_trajectory: bool = False,
     ) -> dict:
         """Forward pass (no cross-lane attention).
 
@@ -388,14 +367,15 @@ class LaneEncoder(nn.Module):
             traj_polylines: (B, T, K, 2) assigned trajectory polylines.
             traj_mask: (B, T) boolean mask for valid trajectories.
             traj_stats: (B, S) aggregate trajectory statistics (S = stats_dim).
-            drop_geometry: If True, zero out geometry embedding. If None,
-                uses stochastic dropout during training.
+            drop_geometry: If True, zero out geometry embedding (trajectory-only).
+            drop_trajectory: If True, zero out trajectory embedding (geometry-only).
 
         Returns:
             Dict with keys: embedding, projection, pred_rank, pred_edge, pred_size.
         """
         embedding = self._encode_per_lane(
-            geometry, traj_polylines, traj_mask, traj_stats, drop_geometry
+            geometry, traj_polylines, traj_mask, traj_stats, drop_geometry,
+            drop_trajectory=drop_trajectory,
         )
         return self._apply_heads(embedding)
 
@@ -407,6 +387,7 @@ class LaneEncoder(nn.Module):
         traj_stats: torch.Tensor,
         group_ids: torch.Tensor,
         drop_geometry: bool = None,
+        drop_trajectory: bool = False,
     ) -> dict:
         """Forward pass with cross-lane attention within groups.
 
@@ -418,14 +399,16 @@ class LaneEncoder(nn.Module):
             traj_mask: (B, T) boolean mask for valid trajectories.
             traj_stats: (B, S) aggregate trajectory statistics (S = stats_dim).
             group_ids: (B,) integer group id per lane.
-            drop_geometry: If True, zero out geometry embedding.
+            drop_geometry: If True, zero out geometry embedding (trajectory-only).
+            drop_trajectory: If True, zero out trajectory embedding (geometry-only).
 
         Returns:
             Dict with keys: embedding, projection, pred_rank, pred_edge, pred_size.
         """
         if not self.use_cross_lane_attention:
             return self.forward(
-                geometry, traj_polylines, traj_mask, traj_stats, drop_geometry
+                geometry, traj_polylines, traj_mask, traj_stats, drop_geometry,
+                drop_trajectory=drop_trajectory,
             )
 
         B = geometry.shape[0]

@@ -1,21 +1,3 @@
-"""Build relational training pairs for the relational diffusion model.
-
-Extracts (target_lane, neighbor_lane, merge_point, offset) pairs from
-annotation relationships (successor, adjacent) and converts them to
-a shared canonical frame for diffusion training.
-
-Key design: both target and neighbor are expressed in the NEIGHBOR's
-canonical frame.  The neighbor is centered at origin and aligned with
-the x-axis (standard canonical form), while the target retains its
-natural spatial offset.  This means the diffusion model learns to
-generate geometry at the correct lateral/longitudinal position relative
-to the neighbor — no post-hoc offset hack needed.
-
-At inference the generated geometry is denormalized using the neighbor's
-pose (centroid, angle, scale) so it lands at the right location in
-image space automatically.
-"""
-
 import logging
 from dataclasses import dataclass
 from pathlib import Path

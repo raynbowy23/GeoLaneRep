@@ -1,28 +1,3 @@
-"""Joint lane encoder for simultaneous contrastive + temporal training.
-
-Combines a trainable LaneEncoder with a GRU temporal head and anomaly
-detector. Unlike LaneTemporalEncoder (which freezes the encoder), this
-model backpropagates through the encoder from both losses:
-
-  - Contrastive path: per-window projections -> InfoNCE per window -> average
-  - Temporal path: GRU over per-window embeddings -> anomaly head -> BCE
-
-Architecture:
-    geometry (static)          <- shared across all windows
-    traj_polylines(w)          <- per window
-    traj_stats(w) + roles      <- per window
-            |
-      LaneEncoder (trainable)
-            |
-      e_i(w)  <-  per-window embedding (B, W, 128)
-            |                    |
-      GRU over windows      proj_head per window
-            |                    |
-      anomaly_head           InfoNCE per window (averaged)
-            |
-      BCE loss
-"""
-
 import torch
 import torch.nn as nn
 

@@ -1,38 +1,5 @@
 #!/usr/bin/env python3
-"""
-Standalone Video Extractor for GeoORBIT Lane Detection
 
-This script extracts trajectory data from traffic camera videos and saves
-.npy files that can be used for training. It can be run asynchronously
-for multiple videos in parallel.
-
-Usage:
-    python scripts/extract_video.py --video path/to/video.mp4 --camera camera_loc
-    python scripts/extract_video.py --video-dir dataset/511video --camera camera_loc
-    python scripts/extract_video.py --list cameras.txt  # Process multiple cameras
-
-Output Files:
-    - {output_dir}/{camera}/trajectory.csv      - Vehicle trajectories
-    - {output_dir}/{camera}/last_frame.npy      - Last processed frame
-    - {output_dir}/{camera}/collect_cars.npy    - Vehicle detections
-    - {output_dir}/{camera}/collect_det_dots_including_truck.npy - Extended detections
-
-Example:
-    # Extract single video
-    python scripts/extract_video.py \\
-        --video dataset/511video/camera_001.mp4 \\
-        --camera camera_001 \\
-        --output results/preprocess
-
-    # Extract all cameras listed in file
-    python scripts/extract_video.py \\
-        --list dataset/camera_location_list.txt \\
-        --video-dir dataset/511video \\
-        --output results/preprocess \\
-        --parallel 4
-"""
-
-import os
 import sys
 import argparse
 import logging
@@ -45,7 +12,6 @@ import cv2
 import numpy as np
 import polars as pl
 
-# Add project root to path
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 

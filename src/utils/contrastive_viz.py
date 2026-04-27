@@ -1,5 +1,3 @@
-"""Visualization utilities for contrastive lane embeddings."""
-
 import logging
 from pathlib import Path
 from typing import List, Optional
@@ -13,9 +11,7 @@ from src.utils.visualization import SLOT_COLORS
 
 logger = logging.getLogger(__name__)
 
-# Marker cycle for cameras
 _MARKERS = ["o", "s", "^", "D", "v", "P", "*", "X", "p", "h"]
-
 
 def plot_embedding_space(
     projections: torch.Tensor,
@@ -82,7 +78,6 @@ def plot_embedding_space(
     fig.savefig(save_path, dpi=150)
     plt.close(fig)
     logger.info(f"Saved embedding space plot to {save_path}")
-
 
 def plot_matching_grid(
     dataset,
@@ -155,7 +150,6 @@ def plot_matching_grid(
     fig.savefig(save_path, dpi=150)
     plt.close(fig)
     logger.info(f"Saved matching grid to {save_path}")
-
 
 def plot_similarity_heatmap(
     projections: torch.Tensor,

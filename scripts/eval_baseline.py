@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-"""Baseline and ablation evaluation for comparison table.
-
-Methods:
-    traj-stats     — 5 hand-crafted trajectory stats (no roles, no encoder)
-    stats-oracle   — traj_stats(4) + roles(5) = 9-dim (uses ground-truth roles)
-    per-camera-sup — per-camera supervised classifier (not zero-shot)
-    no-cross-attn  — encoder checkpoint trained without cross-lane attention
-    encoder        — full encoder (contrastive-only or joint checkpoint)
-
-Usage:
-    python scripts/eval_baseline.py --method traj-stats
-    python scripts/eval_baseline.py --method per-camera-sup
-    python scripts/eval_baseline.py --method no-cross-attn --checkpoint results/...
-    python scripts/eval_baseline.py --method encoder --checkpoint results/joint_encoder/checkpoints/best.pt
-    python scripts/eval_baseline.py --all  # run all methods
-"""
 
 import sys
 from pathlib import Path
@@ -41,9 +25,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ── Dataset loading ──────────────────────────────────────────────────
-
-
 def _load_dataset(config):
     from src.data.lane_dataset import LaneDataset
     model_cfg = config.get("model", {})
@@ -54,9 +35,6 @@ def _load_dataset(config):
         max_traj_per_lane=train_cfg.get("max_traj_per_lane", 50),
         role_similarity_threshold=train_cfg.get("role_similarity_threshold", 0.8),
     )
-
-
-# ── Leave-one-camera-out eval (shared) ───────────────────────────────
 
 
 def _leave_one_out_eval(dataset, features: torch.Tensor) -> dict:
@@ -126,9 +104,6 @@ def _leave_one_out_eval(dataset, features: torch.Tensor) -> dict:
     }
 
 
-# ── Method 1: Trajectory stats only (no roles, no encoder) ──────────
-
-
 def eval_traj_stats_only(dataset) -> dict:
     """5 hand-crafted stats per lane, NO role labels, NO encoder.
 
@@ -175,9 +150,6 @@ def eval_traj_stats_only(dataset) -> dict:
     return result
 
 
-# ── Method 2: Stats oracle (stats + roles) ───────────────────────────
-
-
 def eval_stats_oracle(dataset) -> dict:
     """traj_stats(4) + roles(5) = 9-dim. Uses ground-truth role labels."""
     features = []
@@ -195,9 +167,6 @@ def eval_stats_oracle(dataset) -> dict:
     result["supervision"] = "role labels required"
     result["generalizes"] = "NO"
     return result
-
-
-# ── Method 3: Per-camera supervised classifier ───────────────────────
 
 
 def eval_per_camera_supervised(dataset) -> dict:
@@ -291,16 +260,19 @@ def eval_per_camera_supervised(dataset) -> dict:
     }
 
 
-# ── Method 4: Encoder evaluation (with or without cross-attn) ────────
-
-
-def eval_encoder(dataset, checkpoint_path: str, config: dict, label: str = "encoder") -> dict:
+def eval_encoder(dataset, checkpoint_path: str, config: dict, label: str = "encoder",
+                 drop_geometry: bool = False, drop_trajectory: bool = False,
+                 drop_roles: bool = False) -> dict:
     """Evaluate a trained encoder checkpoint via leave-one-camera-out.
 
     Cross-camera generalization: both references and queries encoded with
     full info (geometry + trajectories + roles). Tests whether the encoder
     produces a cross-camera aligned embedding space — a lane from a held-out
     camera should match same-role lanes from other cameras.
+
+    Args:
+        drop_geometry: If True, zero geometry (trajectory-only ablation).
+        drop_trajectory: If True, zero trajectory (geometry-only ablation).
     """
     from torch.utils.data import Subset
 
@@ -338,10 +310,14 @@ def eval_encoder(dataset, checkpoint_path: str, config: dict, label: str = "enco
         )
 
         ref_proj, ref_roles, _ = encode_lanes(
-            model, ref_loader, device, drop_geometry=False,
+            model, ref_loader, device,
+            drop_geometry=drop_geometry, drop_trajectory=drop_trajectory,
+            drop_roles=drop_roles,
         )
         query_proj, query_roles, _ = encode_lanes(
-            model, query_loader, device, drop_geometry=False,
+            model, query_loader, device,
+            drop_geometry=drop_geometry, drop_trajectory=drop_trajectory,
+            drop_roles=drop_roles,
         )
 
         sim_matrix = torch.mm(query_proj, ref_proj.t())
@@ -390,10 +366,24 @@ def eval_encoder(dataset, checkpoint_path: str, config: dict, label: str = "enco
     result["supervision"] = "none"
     result["generalizes"] = "YES"
     result["cross_lane_attention"] = has_cross_attn
+
+    # Persist per-camera LOCO details for non-ablation runs so
+    # `results/zero_shot/{method}.json` stays up to date without a
+    # separate eval-zero-shot invocation.
+    if not (drop_geometry or drop_trajectory or drop_roles):
+        parts = Path(checkpoint_path).parts
+        try:
+            i = parts.index("results")
+            method_name = parts[i + 1]
+        except (ValueError, IndexError):
+            method_name = Path(checkpoint_path).stem
+        zs_path = Path("results/zero_shot") / f"{method_name}.json"
+        zs_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(zs_path, "w") as f:
+            json.dump(all_results, f, indent=2)
+        logger.info(f"  per-camera LOCO → {zs_path}")
+
     return result
-
-
-# ── Threshold-based anomaly detection for traj-stats baseline ────────
 
 
 def eval_anomaly_threshold(dataset) -> float:
@@ -450,9 +440,6 @@ def eval_anomaly_threshold(dataset) -> float:
 
     accuracy = all_correct / max(all_total, 1)
     return accuracy
-
-
-# ── SVM anomaly baseline ──────────────────────────────────────────────
 
 
 def eval_anomaly_svm(config: dict) -> float:
@@ -525,9 +512,6 @@ def eval_anomaly_svm(config: dict) -> float:
     accuracy = all_correct / max(all_total, 1)
     logger.info(f"  SVM anomaly accuracy: {accuracy:.3f} (n={all_total})")
     return accuracy
-
-
-# ── LSTM anomaly baseline ────────────────────────────────────────────
 
 
 def eval_anomaly_lstm(config: dict) -> float:
@@ -630,9 +614,6 @@ def eval_anomaly_lstm(config: dict) -> float:
     accuracy = all_correct / max(all_total, 1)
     logger.info(f"  LSTM anomaly accuracy: {accuracy:.3f} (n={all_total})")
     return accuracy
-
-
-# ── Summary table ────────────────────────────────────────────────────
 
 
 def print_comparison_table(results: list):
@@ -760,9 +741,6 @@ def render_comparison_figure(results: list, output_dir: Path):
     logger.info(f"Saved comparison figure to {path}")
 
 
-# ── Main ─────────────────────────────────────────────────────────────
-
-
 def main():
     parser = argparse.ArgumentParser(description="Baseline & ablation evaluation")
     parser.add_argument("--config", default="configs/lane_contrastive.yaml")
@@ -830,24 +808,12 @@ def main():
                      f"edge_f1={result['unseen']['edge_flag_f1']:.3f}")
         all_results.append(result)
 
-    # ── Contrastive + cross-lane attention ──
-    contrastive_ckpt = args.contrastive_checkpoint or "results/lane_contrastive/checkpoints/best.pt"
-    if "encoder" in methods_to_run and Path(contrastive_ckpt).exists():
-        logger.info(f"Running: contrastive + cross-attn ({contrastive_ckpt})")
-        result = eval_encoder(dataset, contrastive_ckpt, config,
-                              label="contrastive + cross-attn")
-        agg = result["aggregate"]
-        logger.info(f"  match_sim={agg['mean_match_sim']['mean']:.3f}  "
-                     f"lat_diff={agg['mean_lat_rank_diff']['mean']:.3f}  "
-                     f"edge_f1={agg['edge_flag_f1']['mean']:.3f}")
-        all_results.append(result)
-
-    # ── Contrastive, no cross-lane attention ──
+    # ── Contrastive (stage 1 only, no temporal) ──
     no_crossattn_ckpt = "results/lane_contrastive_no_crossattn/checkpoints/best.pt"
     if "encoder" in methods_to_run and Path(no_crossattn_ckpt).exists():
-        logger.info(f"Running: contrastive, no cross-attn ({no_crossattn_ckpt})")
+        logger.info(f"Running: contrastive ({no_crossattn_ckpt})")
         result = eval_encoder(dataset, no_crossattn_ckpt, config,
-                              label="contrastive, no cross-attn")
+                              label="contrastive")
         agg = result["aggregate"]
         logger.info(f"  match_sim={agg['mean_match_sim']['mean']:.3f}  "
                      f"lat_diff={agg['mean_lat_rank_diff']['mean']:.3f}  "
@@ -873,20 +839,29 @@ def main():
             result["anomaly_acc"] = max(anomaly_acc) if anomaly_acc else 0.0
         all_results.append(result)
 
-    # ── Two-stage temporal (frozen encoder + GRU) ──
-    if "encoder" in methods_to_run:
-        hist_path = Path("results/temporal_encoder/history.json")
-        if hist_path.exists():
-            with open(hist_path) as f:
-                hist = json.load(f)
-            anomaly_acc = hist.get("train/accuracy", [])
-            two_stage_result = {
-                "method": "two-stage (frozen)",
-                "supervision": "none",
-                "generalizes": "YES",
-                "anomaly_acc": max(anomaly_acc) if anomaly_acc else 0.0,
-            }
-            all_results.append(two_stage_result)
+    # ── Ablation: geometry-only (drop trajectories + roles) ──
+    if "encoder" in methods_to_run and Path(joint_ckpt).exists():
+        logger.info(f"Running: geometry-only ablation ({joint_ckpt})")
+        result = eval_encoder(dataset, joint_ckpt, config,
+                              label="geometry-only",
+                              drop_trajectory=True, drop_roles=True)
+        agg = result["aggregate"]
+        logger.info(f"  match_sim={agg['mean_match_sim']['mean']:.3f}  "
+                     f"lat_diff={agg['mean_lat_rank_diff']['mean']:.3f}  "
+                     f"edge_f1={agg['edge_flag_f1']['mean']:.3f}")
+        all_results.append(result)
+
+    # ── Ablation: trajectory-only (drop geometry + roles) ──
+    if "encoder" in methods_to_run and Path(joint_ckpt).exists():
+        logger.info(f"Running: trajectory-only ablation ({joint_ckpt})")
+        result = eval_encoder(dataset, joint_ckpt, config,
+                              label="trajectory-only",
+                              drop_geometry=True, drop_roles=True)
+        agg = result["aggregate"]
+        logger.info(f"  match_sim={agg['mean_match_sim']['mean']:.3f}  "
+                     f"lat_diff={agg['mean_lat_rank_diff']['mean']:.3f}  "
+                     f"edge_f1={agg['edge_flag_f1']['mean']:.3f}")
+        all_results.append(result)
 
     # ── SVM anomaly baseline ──
     if "svm" in methods_to_run:

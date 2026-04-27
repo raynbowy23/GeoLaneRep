@@ -1,15 +1,3 @@
-"""Cross-lane self-attention within lane groups.
-
-Lanes within the same group attend to each other, enabling the model to
-learn group-relative properties (e.g. "fastest lane = passing lane")
-from trajectory behavior rather than absolute statistics.
-
-Pairwise relative features (additive attention bias):
-- lateral_offset_diff: traj_stats[i,2] - traj_stats[j,2]
-- speed_diff: traj_stats[i,0] - traj_stats[j,0]
-- density_ratio: traj_stats[i,3] / (traj_stats[j,3] + eps)
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

@@ -1,12 +1,3 @@
-"""Temporal lane dataset for time-windowed trajectory encoding.
-
-Extends the lane dataset concept by preserving trajectory timestamps and
-splitting them into overlapping time windows. Each sample provides windowed
-trajectory data for a single lane, enabling temporal change detection.
-
-Reuses geometry helpers and role computation from lane_dataset.py.
-"""
-
 import logging
 import math
 from dataclasses import dataclass, field
@@ -34,11 +25,6 @@ from src.data.lane_dataset import (
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Data structure
-# ---------------------------------------------------------------------------
-
 @dataclass
 class TemporalLaneSample:
     """One lane with time-windowed trajectory data."""
@@ -53,7 +39,6 @@ class TemporalLaneSample:
     window_traj_stats: List[np.ndarray]         # W x (4,) stats per window
     role: LaneRole
     window_valid: List[bool]                    # W bools (enough trajs in window?)
-
 
 # ---------------------------------------------------------------------------
 # Polyline resampling (copied from lane_dataset to avoid circular import issues)
@@ -84,7 +69,6 @@ def _resample_polyline(pts: np.ndarray, k: int) -> np.ndarray:
         resampled[i] = pts[seg_idx] * (1 - t) + pts[seg_idx + 1] * t
 
     return resampled
-
 
 # ---------------------------------------------------------------------------
 # Dataset
@@ -462,7 +446,6 @@ class TemporalLaneDataset(Dataset):
             "role": sample.role.to_tensor(include_group_relative=self.use_group_relative),
             "n_windows": W,
         }
-
 
 def temporal_collate_fn(batch: List[dict]) -> dict:
     """Collate temporal samples, padding trajectories across batch and windows.

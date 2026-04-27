@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""Generate encoder evaluation figures.
-
-Figures:
-    E2 - Cross-camera lateral rank alignment: matched vs ground truth scatter
-    E4 - Cross-camera behavioral alignment: similarity boxplot + heatmap
-
-Usage:
-    python scripts/generate_encoder_figures.py \
-        --checkpoint results/joint_encoder/checkpoints/best.pt
-
-    # Or from a pre-saved cross-camera results JSON (no checkpoint needed):
-    python scripts/generate_encoder_figures.py \
-        --results-json results/joint_encoder/cross_camera_results.json
-"""
 
 import sys
 from pathlib import Path
@@ -35,7 +21,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Marker/color cycle for cameras
 _MARKERS = ["o", "s", "^", "D", "v", "P", "*", "X", "p", "h"]
 _CAMERA_COLORS = plt.cm.tab10.colors
 
@@ -105,9 +90,6 @@ def _load_eval_data(args):
     return all_results, projections, roles, cameras, lane_keys, dataset
 
 
-# -- Figure E2: Cross-Camera Lateral Rank Alignment ------------------
-
-
 def figure_e2(all_results: dict, output_dir: Path):
     """Scatter plot: matched lateral rank vs ground truth across cameras.
 
@@ -157,13 +139,8 @@ def figure_e2(all_results: dict, output_dir: Path):
                 linewidths=0.5, label=cam, zorder=2,
             )
 
-    # If no per-lane raw values available, fall back to prediction JSONs
-    if not all_gt:
-        logger.info("Per-lane rank values not in results JSON, trying prediction JSONs...")
-        fig, ax = _figure_e2_from_prediction_jsons(all_results, output_dir, fig, ax)
-    else:
-        # Diagonal
-        ax.plot([0, 1], [0, 1], "k--", alpha=0.5, linewidth=1, label="perfect")
+    ax.plot([0, 1], [0, 1], "k--", alpha=0.5, linewidth=1, label="perfect")
+    if all_gt:
         mae = np.mean(np.abs(np.array(all_gt) - np.array(all_pred)))
         ax.text(
             0.05, 0.92, f"MAE = {mae:.3f}\nn = {len(all_gt)}",
@@ -187,112 +164,24 @@ def figure_e2(all_results: dict, output_dir: Path):
     logger.info(f"Saved E2 to {path}")
 
 
-def _figure_e2_from_prediction_jsons(all_results, output_dir, fig, ax):
-    """Build E2 from per-camera *_predictions.json files in zero_shot dir."""
-    zero_shot_dir = output_dir.parent / "zero_shot"
-    if not zero_shot_dir.exists():
-        logger.warning(f"No zero_shot directory at {zero_shot_dir}")
-        return fig, ax
-
-    unique_cams = sorted(all_results.keys()) if all_results else []
-    # If no results dict, discover from JSON files
-    if not unique_cams:
-        unique_cams = sorted([
-            p.stem.replace("_predictions", "")
-            for p in zero_shot_dir.glob("*_predictions.json")
-        ])
-
-    cam_to_idx = {c: i for i, c in enumerate(unique_cams)}
-
-    all_gt = []
-    all_pred = []
-
-    for cam in unique_cams:
-        pred_path = zero_shot_dir / f"{cam}_predictions.json"
-        if not pred_path.exists():
-            continue
-
-        with open(pred_path) as f:
-            preds = json.load(f)
-
-        cidx = cam_to_idx[cam]
-        color = _CAMERA_COLORS[cidx % len(_CAMERA_COLORS)]
-        marker = _MARKERS[cidx % len(_MARKERS)]
-
-        gt_ranks = [p["lateral_rank"] for p in preds]
-        enc_ranks = [p.get("encoder_rank", p["lateral_rank"]) for p in preds]
-
-        all_gt.extend(gt_ranks)
-        all_pred.extend(enc_ranks)
-
-        ax.scatter(
-            gt_ranks, enc_ranks,
-            c=[color], marker=marker, s=80, edgecolors="black",
-            linewidths=0.5, label=cam, zorder=2,
-        )
-
-    # Diagonal
-    ax.plot([0, 1], [0, 1], "k--", alpha=0.5, linewidth=1)
-    if all_gt:
-        mae = np.mean(np.abs(np.array(all_gt) - np.array(all_pred)))
-        ax.text(
-            0.05, 0.92, f"MAE = {mae:.3f}\nn = {len(all_gt)}",
-            transform=ax.transAxes, fontsize=10,
-            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
-        )
-
-    return fig, ax
-
-
-# -- Figure E3: Edge Prediction --------------------------------------
-
-
 def figure_e3(all_results: dict, output_dir: Path):
     """Confusion matrices for leftmost/rightmost edge prediction.
 
     Also shows per-camera bar chart of edge flag accuracy.
     """
-    # Try to build confusion matrices from prediction JSONs
-    zero_shot_dir = output_dir.parent / "zero_shot"
-
-    # Collect all predictions
     gt_leftmost, pred_leftmost = [], []
     gt_rightmost, pred_rightmost = [], []
     per_camera_acc = {}
 
     cameras = sorted(all_results.keys()) if all_results else []
-    if not cameras:
-        cameras = sorted([
-            p.stem.replace("_predictions", "")
-            for p in zero_shot_dir.glob("*_predictions.json")
-        ])
 
     for cam in cameras:
-        # Source 1: prediction JSONs (from run_zero_shot.py)
-        pred_path = zero_shot_dir / f"{cam}_predictions.json" if zero_shot_dir.exists() else None
-        # Source 2: results JSON per_lane data (from evaluate_zero_shot)
-        per_lane = all_results.get(cam, {}).get("per_lane", []) if all_results else []
+        per_lane = all_results.get(cam, {}).get("per_lane", [])
 
         cam_gt_left, cam_pr_left = [], []
         cam_gt_right, cam_pr_right = [], []
 
-        if pred_path and pred_path.exists():
-            with open(pred_path) as f:
-                preds = json.load(f)
-            for p in preds:
-                gt_l = p.get("is_leftmost", False)
-                gt_r = p.get("is_rightmost", False)
-                pr_l = p.get("encoder_is_leftmost", gt_l)
-                pr_r = p.get("encoder_is_rightmost", gt_r)
-                gt_leftmost.append(int(gt_l))
-                pred_leftmost.append(int(pr_l))
-                gt_rightmost.append(int(gt_r))
-                pred_rightmost.append(int(pr_r))
-                cam_gt_left.append(int(gt_l))
-                cam_pr_left.append(int(pr_l))
-                cam_gt_right.append(int(gt_r))
-                cam_pr_right.append(int(pr_r))
-        elif per_lane and "query_is_leftmost" in per_lane[0]:
+        if per_lane and "query_is_leftmost" in per_lane[0]:
             for l in per_lane:
                 gt_l = l["query_is_leftmost"]
                 gt_r = l["query_is_rightmost"]
@@ -409,9 +298,6 @@ def _plot_confusion(ax, gt, pred, title, labels):
         f"P={precision:.1%}  R={recall:.1%}  F1={f1:.1%}  (n={total})",
         transform=ax.transAxes, ha="center", fontsize=9,
     )
-
-
-# -- Figure E4: Cross-Camera Behavioral Alignment --------------------
 
 
 def figure_e4(
@@ -573,9 +459,6 @@ def figure_e4(
     logger.info(f"Saved E4 to {path}")
 
 
-# -- Figure E4-alt: from results JSON only (no embeddings) -----------
-
-
 def figure_e4_from_results(all_results: dict, output_dir: Path):
     """Simplified E4 using only match similarity from results JSON.
 
@@ -614,9 +497,6 @@ def figure_e4_from_results(all_results: dict, output_dir: Path):
     fig.savefig(str(path), dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info(f"Saved E4 (match sim only) to {path}")
-
-
-# -- Main -------------------------------------------------------------
 
 
 def main():

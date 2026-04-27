@@ -1,17 +1,4 @@
-"""Geometry augmentation and canonical space transforms for diffusion training.
-
-Canonical space: each lane is centered at origin, rotated so start→end aligns
-with the positive x-axis, and scaled to unit arc length. This strips away
-camera-specific position/orientation/scale, leaving only the curvature pattern.
-Both OpenLaneV2 and annotated lanes look identical in this space.
-"""
-
 import numpy as np
-
-
-# ---------------------------------------------------------------------------
-# Canonical space transforms
-# ---------------------------------------------------------------------------
 
 def to_canonical(geometry: np.ndarray):
     """Convert a single (K, 2) lane geometry to canonical space.
@@ -49,7 +36,6 @@ def to_canonical(geometry: np.ndarray):
 
     return canonical, centroid, angle, scale
 
-
 def from_canonical(
     canonical: np.ndarray,
     centroid: np.ndarray,
@@ -78,7 +64,6 @@ def from_canonical(
     # Translate to target centroid
     return rotated + centroid
 
-
 def batch_to_canonical(geometries: np.ndarray):
     """Convert (N, K, 2) geometries to canonical space.
 
@@ -99,7 +84,6 @@ def batch_to_canonical(geometries: np.ndarray):
 
     return canonicals, centroids, angles, scales
 
-
 def batch_from_canonical(
     canonicals: np.ndarray,
     centroids: np.ndarray,
@@ -112,7 +96,6 @@ def batch_from_canonical(
     for i in range(N):
         result[i] = from_canonical(canonicals[i], centroids[i], angles[i], scales[i])
     return result
-
 
 # ---------------------------------------------------------------------------
 # Augmentation (operates in canonical space)

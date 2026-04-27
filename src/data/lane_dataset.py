@@ -1,10 +1,3 @@
-"""Lane-level dataset for contrastive representation learning.
-
-Each sample represents one annotated lane: its geometry (waypoints),
-assigned trajectories, aggregate statistics, and a structural role
-descriptor used for positive pair mining.
-"""
-
 import logging
 import math
 from collections import defaultdict
@@ -25,12 +18,6 @@ from src.data.annotation_loader import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Geometry helpers
-# ---------------------------------------------------------------------------
-
 
 def point_to_polyline_dist(pts: np.ndarray, polyline: np.ndarray) -> np.ndarray:
     """Compute min distance from each point to the nearest segment of a polyline.
@@ -67,7 +54,6 @@ def point_to_polyline_dist(pts: np.ndarray, polyline: np.ndarray) -> np.ndarray:
     seg_dists = np.linalg.norm(pts[:, None, :] - proj, axis=2)  # (N, S)
     # Min across segments
     return seg_dists.min(axis=1)  # (N,)
-
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -109,7 +95,6 @@ class LaneRole:
         """Structural role tensor (5 dims) for similarity computation."""
         return self.to_tensor(include_group_relative=False)
 
-
 @dataclass
 class LaneSample:
     """One annotated lane with its geometry, trajectories, and role."""
@@ -124,7 +109,6 @@ class LaneSample:
     traj_stats: np.ndarray     # (4,) [mean_speed, mean_curvature, mean_lateral_offset, traj_count_norm]
 
     role: LaneRole
-
 
 # ---------------------------------------------------------------------------
 # Lane role computation
@@ -200,7 +184,6 @@ def _compute_lane_roles(
 
     return roles
 
-
 def _add_group_relative_features(
     roles: Dict[int, LaneRole],
     group_stats: Dict[int, np.ndarray],
@@ -239,7 +222,6 @@ def _add_group_relative_features(
         roles[cls_id].relative_density = float(
             (densities[i] - dens_mean) / (dens_std + eps)
         )
-
 
 # ---------------------------------------------------------------------------
 # Trajectory statistics
@@ -298,7 +280,6 @@ def _compute_traj_stats(
     count_norm = len(trajectories) / max(max_traj_count, 1)
 
     return np.array([mean_speed, mean_curv, mean_lat, count_norm], dtype=np.float32)
-
 
 # ---------------------------------------------------------------------------
 # Dataset
@@ -655,7 +636,6 @@ class LaneDataset(Dataset):
 
         return resampled
 
-
 def collate_fn(batch: List[dict]) -> dict:
     """Collate variable-length trajectory lists into padded tensors."""
     # Stack fixed-size tensors
@@ -697,7 +677,6 @@ def collate_fn(batch: List[dict]) -> dict:
         "roles": roles,                    # (B, R)
         "group_ids": group_ids,            # (B,)
     }
-
 
 class GroupBatchSampler(Sampler):
     """Batch sampler that ensures all lanes from the same (camera, group_id) appear together.

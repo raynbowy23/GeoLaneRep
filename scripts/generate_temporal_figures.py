@@ -1,32 +1,9 @@
 #!/usr/bin/env python3
-"""Generate temporal encoder figures for the paper.
-
-Figures:
-    T1 — Window size comparison: anomaly detection at 5/15/30-sec windows
-    T2 — Anomaly score timeline with injected incident overlay
-    T3 — Embedding trajectory (UMAP): single lane traced through incident
-    T4 — Embedding delta heatmap ||e(t) - e(t-1)|| per lane per window
-
-Legacy aliases: 2a=T3(UMAP), 2b=T2(timeline), 2c=T4(heatmap)
-
-Usage (two-stage):
-    python scripts/generate_temporal_figures.py \
-        --config configs/lane_contrastive.yaml \
-        --checkpoint results/temporal_encoder/checkpoints/best.pt \
-        --encoder-checkpoint results/lane_contrastive/checkpoints/best.pt
-
-Usage (joint):
-    python scripts/generate_temporal_figures.py \
-        --config configs/lane_contrastive.yaml \
-        --checkpoint results/joint_encoder/checkpoints/best.pt \
-        --joint
-"""
 
 import sys
 import warnings
 from pathlib import Path
 
-# Suppress UMAP/numba warnings
 warnings.filterwarnings("ignore", message="n_jobs value")
 warnings.filterwarnings("ignore", message=".*TBB threading layer.*")
 
@@ -34,6 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import argparse
+import json
 import logging
 
 import matplotlib.pyplot as plt
@@ -155,9 +133,6 @@ def _load_model_and_data(args):
     )
 
     return model, dataset, loader, config, device
-
-
-# ── Figure T1: Window size comparison ────────────────────────────────
 
 
 def figure_t1(model, config, device, output_dir: Path):
@@ -337,9 +312,6 @@ def figure_t1(model, config, device, output_dir: Path):
     return results.get(best_ws, {})
 
 
-# ── Figure T2: Anomaly score timeline ────────────────────────────────
-
-
 def _classify_lane_role(roles_vec) -> str:
     """Classify a lane's role from its role vector into a human-readable label.
 
@@ -487,9 +459,6 @@ def figure_t2(model, loader, device, config, output_dir: Path):
     logger.info(f"Saved T2 to {path}")
 
 
-# ── Figure T3: ROC curve + confusion matrix ──────────────────────────
-
-
 def figure_t3(model, loader, device, config, output_dir: Path):
     """ROC curve and confusion matrix at best threshold.
 
@@ -610,9 +579,6 @@ def figure_t3(model, loader, device, config, output_dir: Path):
     logger.info(f"Saved T3 to {path}")
 
 
-# ── Figure T4: Embedding delta heatmap ────────────────────────────────
-
-
 def figure_t4(model, loader, device, config, output_dir: Path):
     """Embedding delta heatmap: ||e(t) - e(t-1)|| per lane per window.
 
@@ -729,59 +695,181 @@ def figure_t4(model, loader, device, config, output_dir: Path):
     plt.close(fig)
     logger.info(f"Saved T4 to {path}")
 
+_T5_DEFAULT_PATHS = {
+    "(a) Joint (scratch)": "results/joint_encoder/history.json",
+    "(b) Joint (warm-start)": "results/joint_encoder_warm/history.json",
+}
+_T5_COLORS = {"(a) Joint (scratch)": "#FF9800",
+              "(b) Joint (warm-start)": "#4CAF50"}
 
-# ── Main ─────────────────────────────────────────────────────────────
+
+def _load_history(path: str) -> dict:
+    p = Path(path)
+    if not p.exists():
+        logger.warning(f"History not found: {p}")
+        return {}
+    with open(p) as f:
+        return json.load(f)
+
+
+def _epochs_to_threshold(values: list, threshold: float = 0.8) -> str:
+    for i, v in enumerate(values):
+        if v >= threshold:
+            return str(i + 1)
+    return f">{len(values)}"
+
+
+def figure_t5a(histories: dict, output_dir: Path):
+    """Training curves: anomaly accuracy over epochs."""
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for label, hist in histories.items():
+        acc = hist.get("train/anomaly_accuracy", [])
+        if not acc:
+            logger.warning(f"No accuracy data for {label}")
+            continue
+        epochs = np.arange(1, len(acc) + 1)
+        ax.plot(epochs, acc, label=label, color=_T5_COLORS.get(label, "gray"),
+                linewidth=2, alpha=0.85)
+    ax.axhline(0.8, color="gray", linestyle=":", alpha=0.5, label="80% threshold")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Anomaly Detection Accuracy")
+    ax.set_title("Anomaly Accuracy — Joint Training Variants")
+    ax.legend(fontsize=9)
+    ax.set_ylim(0.4, 1.02)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    path = output_dir / "T5a_accuracy_curves.png"
+    fig.savefig(str(path), dpi=150)
+    plt.close(fig)
+    logger.info(f"Saved T5a to {path}")
+
+
+def figure_t5b(histories: dict, output_dir: Path):
+    """Contrastive quality: pos_sim and neg_sim over epochs."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    for label, hist in histories.items():
+        pos = hist.get("train/mean_pos_sim", [])
+        neg = hist.get("train/mean_neg_sim", [])
+        if not pos:
+            continue
+        epochs = np.arange(1, len(pos) + 1)
+        c = _T5_COLORS.get(label, "gray")
+        ax1.plot(epochs, pos, label=label, color=c, linewidth=2)
+        ax2.plot(epochs, neg, label=label, color=c, linewidth=2)
+    ax1.set_xlabel("Epoch"); ax1.set_ylabel("Mean Positive Similarity")
+    ax1.set_title("Positive Pair Similarity"); ax1.legend(fontsize=9); ax1.grid(True, alpha=0.3)
+    ax2.set_xlabel("Epoch"); ax2.set_ylabel("Mean Negative Similarity")
+    ax2.set_title("Negative Pair Similarity"); ax2.legend(fontsize=9); ax2.grid(True, alpha=0.3)
+    fig.suptitle("Contrastive Quality — Joint Training Variants", fontsize=13)
+    fig.tight_layout()
+    path = output_dir / "T5b_contrastive_quality.png"
+    fig.savefig(str(path), dpi=150)
+    plt.close(fig)
+    logger.info(f"Saved T5b to {path}")
+
+
+def t5_summary_table(histories: dict, output_dir: Path):
+    """Print and save T5 summary table as CSV."""
+    rows = []
+    header = ["Variant", "anomaly_acc", "mean_pos_sim", "mean_neg_sim",
+              "pos-neg_gap", "epochs_to_80%"]
+    for label, hist in histories.items():
+        acc = hist.get("train/anomaly_accuracy", [])
+        pos = hist.get("train/mean_pos_sim", [])
+        neg = hist.get("train/mean_neg_sim", [])
+        final_acc = f"{acc[-1]:.3f}" if acc else "—"
+        final_pos = f"{pos[-1]:.3f}" if pos else "—"
+        final_neg = f"{neg[-1]:.3f}" if neg else "—"
+        gap = f"{pos[-1] - neg[-1]:.3f}" if (pos and neg) else "—"
+        e80 = _epochs_to_threshold(acc, 0.8) if acc else "—"
+        rows.append([label, final_acc, final_pos, final_neg, gap, e80])
+
+    col_widths = [max(len(r[i]) for r in [header] + rows) for i in range(len(header))]
+    fmt = "  ".join(f"{{:<{w}}}" for w in col_widths)
+    print("\n" + "=" * 70)
+    print("T5 Ablation Summary")
+    print("=" * 70)
+    print(fmt.format(*header))
+    print("-" * sum(col_widths) + "-" * (len(header) - 1) * 2)
+    for row in rows:
+        print(fmt.format(*row))
+    print()
+
+    csv_path = output_dir / "T5_summary.csv"
+    with open(csv_path, "w") as f:
+        f.write(",".join(header) + "\n")
+        for row in rows:
+            f.write(",".join(row) + "\n")
+    logger.info(f"Saved summary to {csv_path}")
+
+
+def run_t5(args, output_dir: Path):
+    histories = {}
+    for label, path in [
+        ("(a) Joint (scratch)", args.joint_scratch),
+        ("(b) Joint (warm-start)", args.joint_warm),
+    ]:
+        hist = _load_history(path)
+        if hist:
+            histories[label] = hist
+    if not histories:
+        logger.error("No training histories found for T5. Run training first.")
+        return
+    logger.info(f"Found {len(histories)}/2 training histories")
+    figure_t5a(histories, output_dir)
+    figure_t5b(histories, output_dir)
+    t5_summary_table(histories, output_dir)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Generate temporal encoder figures")
-    parser.add_argument("--config", required=True, help="Path to config YAML")
-    parser.add_argument(
-        "--checkpoint", required=True,
-        help="Path to temporal/joint encoder checkpoint",
-    )
-    parser.add_argument(
-        "--encoder-checkpoint", default=None,
-        help="Path to pre-trained LaneEncoder checkpoint (required for two-stage, ignored for --joint)",
-    )
-    parser.add_argument(
-        "--joint", action="store_true",
-        help="Load as JointLaneEncoder (single checkpoint) instead of two-stage",
-    )
-    parser.add_argument(
-        "--output-dir", default="results/joint_encoder/figures",
-        help="Output directory for figures",
-    )
-    parser.add_argument(
-        "--figures", nargs="+", default=["T1", "T2", "T3", "T4"],
-        choices=["T1", "T2", "T3", "T4"],
-        help="Which figures to generate. T1=window sweep, T2=anomaly timeline, T3=ROC+confusion, T4=embedding delta heatmap.",
-    )
+    parser.add_argument("--config", default=None,
+                        help="Path to config YAML (required for T1-T4)")
+    parser.add_argument("--checkpoint", default=None,
+                        help="Path to temporal/joint encoder checkpoint (required for T1-T4)")
+    parser.add_argument("--encoder-checkpoint", default=None,
+                        help="Path to pre-trained LaneEncoder checkpoint (two-stage mode; ignored for --joint)")
+    parser.add_argument("--joint", action="store_true",
+                        help="Load as JointLaneEncoder (single checkpoint) instead of two-stage")
+    parser.add_argument("--output-dir", default="results/joint_encoder/figures",
+                        help="Output directory for figures")
+    parser.add_argument("--figures", nargs="+", default=["T1", "T2", "T3", "T4"],
+                        choices=["T1", "T2", "T3", "T4", "T5"],
+                        help="T1=window sweep, T2=anomaly timeline, T3=ROC+confusion, "
+                             "T4=embedding delta heatmap, T5=joint training ablation.")
+    parser.add_argument("--joint-scratch", default=_T5_DEFAULT_PATHS["(a) Joint (scratch)"],
+                        help="(T5) Path to joint-scratch history.json")
+    parser.add_argument("--joint-warm", default=_T5_DEFAULT_PATHS["(b) Joint (warm-start)"],
+                        help="(T5) Path to joint-warm-start history.json")
     args = parser.parse_args()
-
-    if not args.joint and not args.encoder_checkpoint:
-        parser.error("--encoder-checkpoint is required for two-stage mode (use --joint for joint checkpoint)")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    model, dataset, loader, config, device = _load_model_and_data(args)
+    needs_model = any(f in args.figures for f in ("T1", "T2", "T3", "T4"))
+    if needs_model:
+        if not args.config or not args.checkpoint:
+            parser.error("--config and --checkpoint are required for T1-T4")
+        if not args.joint and not args.encoder_checkpoint:
+            parser.error("--encoder-checkpoint is required for two-stage mode (use --joint for joint checkpoint)")
+        model, dataset, loader, config, device = _load_model_and_data(args)
 
-    if "T1" in args.figures:
-        logger.info("Generating T1: Window size comparison...")
-        figure_t1(model, config, device, output_dir)
+        if "T1" in args.figures:
+            logger.info("Generating T1: Window size comparison...")
+            figure_t1(model, config, device, output_dir)
+        if "T2" in args.figures:
+            logger.info("Generating T2: Anomaly score timeline...")
+            figure_t2(model, loader, device, config, output_dir)
+        if "T3" in args.figures:
+            logger.info("Generating T3: ROC curve + confusion matrix...")
+            figure_t3(model, loader, device, config, output_dir)
+        if "T4" in args.figures:
+            logger.info("Generating T4: Embedding delta heatmap...")
+            figure_t4(model, loader, device, config, output_dir)
 
-    if "T2" in args.figures:
-        logger.info("Generating T2: Anomaly score timeline...")
-        figure_t2(model, loader, device, config, output_dir)
-
-    if "T3" in args.figures:
-        logger.info("Generating T3: ROC curve + confusion matrix...")
-        figure_t3(model, loader, device, config, output_dir)
-
-    if "T4" in args.figures:
-        logger.info("Generating T4: Embedding delta heatmap...")
-        figure_t4(model, loader, device, config, output_dir)
+    if "T5" in args.figures:
+        logger.info("Generating T5: Joint-training ablation...")
+        run_t5(args, output_dir)
 
     logger.info(f"All figures saved to {output_dir}")
 

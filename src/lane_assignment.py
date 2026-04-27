@@ -1,14 +1,3 @@
-"""Geometric lane assignment: assign tracklets to annotated lanes.
-
-No ML training required. Each tracklet is assigned to the annotation lane
-with the smallest perpendicular projection distance (in pixel space).
-
-Pipeline:
-  trajectory.csv
-    → per track: project onto every annotation lane (all groups)
-    → assign to nearest lane (or reject if too far)
-"""
-
 import logging
 from typing import Dict, List, Optional, Tuple
 

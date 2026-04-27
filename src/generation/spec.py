@@ -1,9 +1,3 @@
-"""Lane specification resolution for directed generation (Pipeline B).
-
-Resolves user-specified lane constraints (e.g., "rightmost lane in US12_Park
-group 0") to a target embedding and spatial context for the diffusion model.
-"""
-
 import logging
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
@@ -392,17 +386,21 @@ class SpecEmbeddingResolver:
         perp = np.array([-mean_tangent[1], mean_tangent[0]])
         heading = float(np.arctan2(mean_tangent[1], mean_tangent[0]))
 
-        # Find anchor lane using UNFOLDED perpendicular for visual consistency.
-        # The dataset's lateral_rank uses a folded tangent, which flips
-        # left/right for one traffic direction. Instead, compute fresh
-        # lateral positions from the unfolded mean tangent.
-        unfolded_tangent = np.mean(tangents, axis=0) if tangents else np.array([1.0, 0.0])
-        unfolded_tangent = unfolded_tangent / (np.linalg.norm(unfolded_tangent) + 1e-8)
-        # Perpendicular: 90° CCW rotation (no folding)
-        unfolded_perp = np.array([-unfolded_tangent[1], unfolded_tangent[0]])
+        # Detect if perp direction is inverted relative to role annotations.
+        # The folded tangent convention can produce a perp pointing "left" instead of
+        # "right" relative to the role-annotated ordering. Detect and correct consistently.
+        _rightmost_flags = self._roles[group_mask, 2].astype(bool)
+        _leftmost_flags = self._roles[group_mask, 1].astype(bool)
+        perp_inverted = False
+        if _rightmost_flags.any() and _leftmost_flags.any():
+            _lat = group_geoms.mean(axis=1) @ perp
+            if _lat[_rightmost_flags].mean() < _lat[_leftmost_flags].mean():
+                perp_inverted = True
+                perp = -perp
 
         group_centroids = group_geoms.mean(axis=1)  # (G, 2)
-        visual_lateral = group_centroids @ unfolded_perp  # project onto unfolded perp
+        # Use the (possibly corrected) perp for all lateral ordering
+        visual_lateral = group_centroids @ perp
 
         # Role replacement: anchor is the specific lane being replaced
         if spec.replace_cls is not None:
@@ -441,23 +439,13 @@ class SpecEmbeddingResolver:
                 anchor_idx = np.argmax(visual_lateral)
                 anchor_side = "right"
         elif spec.is_rightmost or (spec.lateral_rank is not None and spec.lateral_rank > 0.5):
-            # Use role annotations to find the actual rightmost lane
-            rightmost_flags = self._roles[group_mask, 2].astype(bool)
-            if rightmost_flags.any():
-                anchor_idx = int(np.where(rightmost_flags)[0][0])
-            else:
-                anchor_idx = int(np.argmax(visual_lateral))
+            # Always use visual_lateral (corrected perp) — role flags may be inverted
+            anchor_idx = int(np.argmax(visual_lateral))
             anchor_side = "right"
         else:
-            # Use role annotations to find the actual leftmost lane
-            leftmost_flags = self._roles[group_mask, 1].astype(bool)
-            if leftmost_flags.any():
-                anchor_idx = int(np.where(leftmost_flags)[0][0])
-            else:
-                anchor_idx = int(np.argmin(visual_lateral))
+            # Leftmost: minimum visual_lateral (corrected perp)
+            anchor_idx = int(np.argmin(visual_lateral))
             anchor_side = "left"
-
-        anchor_geom = group_geoms[anchor_idx]
 
         # Estimate median inter-lane spacing using the same perp direction
         if len(group_geoms) > 1:
@@ -468,6 +456,26 @@ class SpecEmbeddingResolver:
             median_spacing = float(np.median(spacings)) if len(spacings) > 0 else 0.01
         else:
             median_spacing = 0.01
+
+        # Prefer straighter anchors for rightmost/leftmost — avoid picking ramps/connectors.
+        # Among lanes at the extreme lateral position (within 1 spacing), pick the straightest.
+        if spec.is_rightmost or spec.is_leftmost:
+            centroids_all = group_geoms.mean(axis=1)
+            lat_all = centroids_all @ perp
+            anchor_lat = lat_all[anchor_idx]
+            candidates_mask = np.abs(lat_all - anchor_lat) <= median_spacing
+            candidates_idx = np.where(candidates_mask)[0]
+            if len(candidates_idx) > 1:
+                def _curvature_var(g):
+                    diffs = np.diff(g, axis=0)
+                    angles = np.arctan2(diffs[:, 1], diffs[:, 0])
+                    ac = np.abs(np.diff(angles))
+                    ac = np.where(ac > np.pi, 2 * np.pi - ac, ac)
+                    return float(np.var(ac))
+                curvatures = [_curvature_var(group_geoms[i]) for i in candidates_idx]
+                anchor_idx = int(candidates_idx[np.argmin(curvatures)])
+
+        anchor_geom = group_geoms[anchor_idx]
 
         # --- Populate relational context ---
         # Terminology:
@@ -554,7 +562,7 @@ class SpecEmbeddingResolver:
             merge_point = 1.0  # end of lane (parallel adjacency)
 
         # Compute offset: lateral distance between generated lane and neighbor.
-        # Must use unfolded_perp to match the training convention in
+        # Must use perp to match the training convention in
         # relational_pairs.py (which also uses unfolded group_perp).
         if explicit_offset is not None:
             offset = explicit_offset
@@ -562,7 +570,7 @@ class SpecEmbeddingResolver:
             anchor_start = anchor_geom[0]
             nb_dists = np.linalg.norm(neighbor_geom - anchor_start, axis=1)
             nearest_nb_pt = neighbor_geom[np.argmin(nb_dists)]
-            offset = float(np.dot(anchor_start - nearest_nb_pt, unfolded_perp))
+            offset = float(np.dot(anchor_start - nearest_nb_pt, perp))
         else:
             # Anchor == neighbor: use median spacing as fallback
             offset = median_spacing if anchor_side == "right" else -median_spacing

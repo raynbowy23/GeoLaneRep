@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""Visualize lane assignment results: tracklets colored by assigned lane on camera frame.
-
-Usage:
-    python scripts/visualize_assignment.py --config configs/lanelet_core.yaml
-    python scripts/visualize_assignment.py --config configs/lanelet_core.yaml --camera US12_Greenway
-"""
 
 import argparse
 import logging
@@ -22,8 +16,6 @@ from src.data.annotation_loader import get_group_lanes, load_annotation_json
 
 logger = logging.getLogger(__name__)
 
-# Distinct colors for (group, lane) pairs (BGR).
-# Index by (group_id * max_lanes + cls_id) to avoid collisions across groups.
 PALETTE = [
     (0, 0, 255),      # red
     (255, 165, 0),     # blue-ish
@@ -175,7 +167,7 @@ def main():
     )
 
     saving_path = Path(cfg.get("experiment", {}).get("saving_path", "./results/"))
-    assign_dir = saving_path / "lane_assignment"
+    assign_dir = saving_path / "preprocessing" / "lane_assignment"
     output_dir = Path(args.output) if args.output else assign_dir / "viz"
     output_dir.mkdir(parents=True, exist_ok=True)
 
